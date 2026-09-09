@@ -8,8 +8,9 @@ The user surfaced that the publishing rows were emitted as
 single homepage link — operators had no way to act on them. The
 module was rewritten so:
 
-  * every row is ``Status.MANUAL`` (nothing is genuinely "not
+  * process-only rows are ``Status.MANUAL`` (nothing is genuinely "not
     configured" — the kit just can't witness the action remotely);
+  * PUB-001 and PUB-002 use minimalBots ALM probes where possible;
   * every ``result`` describes WHAT the kit can't see, not the
     boilerplate "Manual verification required";
   * every ``remediation`` carries concrete steps and the best
@@ -28,6 +29,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import responses
+from responses import matchers
 
 
 @pytest.fixture(autouse=True)
@@ -45,17 +48,51 @@ def _scripts_on_path():
             pass
 
 
-def _runner(env_id: str | None = "env-abc", bot_id: str | None = "bot-xyz"):
-    """Minimal runner stub exposing the two attributes publishing.py reads."""
+from tests.conftest import require_validated_mock
+from tests.mocks import minimalbots as mb
+
+require_validated_mock(mb)
+
+
+def _runner(
+    env_id: str | None = "env-abc",
+    bot_id: str | None = "bot-xyz",
+    *,
+    minimalbots=None,
+    alm_import_probe: bool = False,
+):
+    """Minimal runner stub exposing the attributes publishing.py reads."""
     config: dict = {}
     if bot_id:
         config["agents"] = [{"slug": "esshr", "botId": bot_id}]
-    return SimpleNamespace(env_id=env_id, config=config)
+    return SimpleNamespace(
+        env_id=env_id,
+        config=config,
+        minimalbots=minimalbots,
+        alm_import_probe=alm_import_probe,
+    )
+
+
+@pytest.fixture
+def minimalbots_client(fake_token: str):
+    from flightcheck.minimalbots_client import MinimalBotsClient
+
+    client = MinimalBotsClient(
+        tenant_id="00000000-0000-0000-0000-000000001111",
+        environment_id=mb.MOCK_ENV_ID_TEST_SUFFIX_0,
+        ring="test",
+    )
+    client._token = fake_token
+    return client
 
 
 def _results_by_id(runner) -> dict:
     from flightcheck.checks.publishing import run_publishing_checks
     return {r.checkpoint_id: r for r in run_publishing_checks(runner)}
+
+
+def _delete_calls():
+    return [c for c in responses.calls if c.request.method == "DELETE"]
 
 
 # --------------------------------------------------------------- shape
@@ -70,15 +107,28 @@ def test_all_eight_checks_emitted():
     }
 
 
-def test_every_check_is_manual_not_notconfigured():
+def test_process_only_checks_are_manual_not_notconfigured():
     """The user's principle: nothing here is misconfigured. Don't
     label it ``NotConfigured`` — that wrongly implies setup is missing."""
     from flightcheck.runner import Status
-    for r in _results_by_id(_runner()).values():
+    by_id = _results_by_id(_runner())
+    for checkpoint_id in ("QA-001", "QA-002", "QA-012", "PUB-003", "PUB-006", "PUB-011"):
+        r = by_id[checkpoint_id]
         assert r.status == Status.MANUAL.value, (
             f"{r.checkpoint_id} regressed to status={r.status!r}; "
-            "publishing/QA gates are manual, not NotConfigured."
+            "process-only publishing/QA gates are manual, not NotConfigured."
         )
+
+
+def test_pub_001_and_pub_002_are_skipped_when_minimalbots_unavailable():
+    from flightcheck.runner import Status
+
+    by_id = _results_by_id(_runner(minimalbots=None, alm_import_probe=True))
+
+    assert by_id["PUB-001"].status == Status.SKIPPED.value
+    assert "minimalBots ALM client is unavailable" in by_id["PUB-001"].result
+    assert by_id["PUB-002"].status == Status.SKIPPED.value
+    assert "minimalBots ALM client is unavailable" in by_id["PUB-002"].result
 
 
 def test_every_check_has_concrete_result_text():
@@ -158,12 +208,176 @@ def test_pub_001_links_to_maker_solutions_for_export():
     assert "Export solution" in text and "Managed" in text
 
 
+@responses.activate
+def test_pub_001_export_present_passes(minimalbots_client):
+    from flightcheck.runner import Status
+
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/alm/{mb.MOCK_BOT_ID}/export",
+        body=mb.export_package(),
+        status=200,
+        content_type="application/zip",
+        match=[matchers.query_param_matcher({"api-version": "2024-10-01"})],
+    )
+
+    result = _results_by_id(
+        _runner(bot_id=mb.MOCK_BOT_ID, minimalbots=minimalbots_client)
+    )["PUB-001"]
+
+    assert result.status == Status.PASSED.value
+    assert "valid zip package" in result.result
+
+
+@responses.activate
+def test_pub_001_export_empty_fails(minimalbots_client):
+    from flightcheck.runner import Status
+
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/alm/{mb.MOCK_BOT_ID}/export",
+        body=b"",
+        status=200,
+        content_type="application/zip",
+        match=[matchers.query_param_matcher({"api-version": "2024-10-01"})],
+    )
+
+    result = _results_by_id(
+        _runner(bot_id=mb.MOCK_BOT_ID, minimalbots=minimalbots_client)
+    )["PUB-001"]
+
+    assert result.status == Status.FAILED.value
+    assert "empty package" in result.result
+
+
 def test_pub_002_describes_target_environment_import():
     text = _results_by_id(_runner())["PUB-002"].remediation
     # The action happens in a *different* environment than the kit
     # was pointed at, so we can't deep-link — but we must say where.
     assert "test environment" in text.lower()
     assert "Import solution" in text
+
+
+def test_pub_002_requires_explicit_opt_in(minimalbots_client):
+    from flightcheck.runner import Status
+
+    result = _results_by_id(
+        _runner(bot_id=mb.MOCK_BOT_ID, minimalbots=minimalbots_client)
+    )["PUB-002"]
+
+    assert result.status == Status.SKIPPED.value
+    assert "not explicitly enabled" in result.result
+    assert "--alm-import-probe" in result.remediation
+
+
+@responses.activate
+def test_pub_002_import_success_and_cleanup_passes(minimalbots_client):
+    from flightcheck.runner import Status
+
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/alm/{mb.MOCK_BOT_ID}/export",
+        body=mb.export_package(),
+        status=200,
+        content_type="application/zip",
+    )
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/alm/import",
+        json=mb.import_result(),
+        status=200,
+    )
+    responses.add(
+        responses.DELETE,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/api/{mb.MOCK_BOT_ID}",
+        status=204,
+    )
+
+    result = _results_by_id(
+        _runner(
+            bot_id=mb.MOCK_BOT_ID,
+            minimalbots=minimalbots_client,
+            alm_import_probe=True,
+        )
+    )["PUB-002"]
+
+    assert result.status == Status.PASSED.value
+    assert "cleanup deleted it" in result.result
+    deletes = _delete_calls()
+    assert len(deletes) == 1
+    assert deletes[0].request.url.startswith(
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/api/{mb.MOCK_BOT_ID}"
+    )
+
+
+@responses.activate
+def test_pub_002_schema_collision_fails(minimalbots_client):
+    from flightcheck.runner import Status
+
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/alm/{mb.MOCK_BOT_ID}/export",
+        body=mb.export_package(),
+        status=200,
+        content_type="application/zip",
+    )
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/alm/import",
+        status=409,
+    )
+
+    result = _results_by_id(
+        _runner(
+            bot_id=mb.MOCK_BOT_ID,
+            minimalbots=minimalbots_client,
+            alm_import_probe=True,
+        )
+    )["PUB-002"]
+
+    assert result.status == Status.FAILED.value
+    assert "schema_collision" in result.result
+    assert not _delete_calls()
+
+
+@responses.activate
+def test_pub_002_delete_called_when_import_result_is_invalid(minimalbots_client):
+    from flightcheck.runner import Status
+
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/alm/{mb.MOCK_BOT_ID}/export",
+        body=mb.export_package(),
+        status=200,
+        content_type="application/zip",
+    )
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/alm/import",
+        json={"cdsBotId": mb.MOCK_BOT_ID},
+        status=200,
+    )
+    responses.add(
+        responses.DELETE,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/api/{mb.MOCK_BOT_ID}",
+        status=204,
+    )
+
+    result = _results_by_id(
+        _runner(
+            bot_id=mb.MOCK_BOT_ID,
+            minimalbots=minimalbots_client,
+            alm_import_probe=True,
+        )
+    )["PUB-002"]
+
+    assert result.status == Status.FAILED.value
+    assert "did not return both cdsBotId and schemaName" in result.result
+    deletes = _delete_calls()
+    assert len(deletes) == 1
+    assert deletes[0].request.url.startswith(
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/api/{mb.MOCK_BOT_ID}"
+    )
 
 
 def test_pub_003_is_explicitly_organizational():

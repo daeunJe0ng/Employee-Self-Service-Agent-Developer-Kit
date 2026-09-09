@@ -4,19 +4,21 @@
 """
 ESS FlightCheck — Publishing & QA Validation (PUB-xxx, QA-xxx)
 
-These checks are organizational/process gates that the kit cannot
+Most checks are organizational/process gates that the kit cannot
 verify by reading an API (test sets live in Copilot Studio behind the
-Analytics surface; managed-solution exports happen in the Power Apps
-maker; UAT sign-off lives in the operator's change-management
-system; M365 admin approval lives in the Microsoft 365 admin center).
+Analytics surface; UAT sign-off lives in the operator's
+change-management system; M365 admin approval lives in the Microsoft
+365 admin center). PUB-001 and PUB-002 use the Copilot Studio
+minimalBots ALM APIs when the required client and opt-in gate are
+available.
 
-Each check therefore emits ``Status.MANUAL`` — meaning "the kit has
-nothing to check; the operator must confirm this themselves" — and
-the remediation provides the concrete steps + best available deep
-link for that specific action.
+Rows that the kit cannot verify still emit ``Status.MANUAL`` — meaning
+"the operator must confirm this themselves" — and the remediation provides
+the concrete steps plus best available deep link for that specific action.
 
 Bucketing: MANUAL routes to the "Needs manual verification" section
-of the FlightCheck report. These checks never fail readiness.
+of the FlightCheck report. PUB-001/PUB-002 can pass or fail readiness
+when their API probes run.
 """
 
 from ..runner import CheckResult, Role, Status
@@ -26,6 +28,7 @@ STUDIO_BASE = "https://copilotstudio.microsoft.com"
 M365_INTEGRATED_APPS_URL = (
     "https://admin.microsoft.com/Adminportal/Home#/Settings/IntegratedApps"
 )
+ZIP_MAGIC = b"PK\x03\x04"
 
 
 def _studio_agent_url(runner) -> str | None:
@@ -59,6 +62,279 @@ def _maker_solutions_url(runner) -> str | None:
     if not env_id:
         return None
     return f"https://make.powerapps.com/environments/{env_id}/solutions"
+
+
+def _configured_bot_id(runner) -> str | None:
+    config = getattr(runner, "config", None) or {}
+    for agent in config.get("agents", []) or []:
+        bot_id = agent.get("botId")
+        if bot_id:
+            return bot_id
+    return (config.get("agent") or {}).get("botId")
+
+
+def _api_result(
+    *,
+    checkpoint_id: str,
+    row: dict,
+    status: Status,
+    result: str,
+    remediation: str,
+) -> CheckResult:
+    return CheckResult(
+        checkpoint_id=checkpoint_id,
+        category="Publishing",
+        priority=row["p"],
+        status=status.value,
+        description=row["desc"],
+        result=result,
+        remediation=remediation,
+        doc_link=row["doc_link"],
+        roles=row["roles"],
+    )
+
+
+def _minimalbots_unavailable(checkpoint_id: str, row: dict) -> CheckResult:
+    fallback = f" Manual fallback: {row['remediation']}" if row.get("remediation") else ""
+    return _api_result(
+        checkpoint_id=checkpoint_id,
+        row=row,
+        status=Status.SKIPPED,
+        result="Copilot Studio minimalBots ALM client is unavailable for this run.",
+        remediation=(
+            "Re-run FlightCheck in a scope that authenticates the Copilot Studio "
+            "minimalBots Power Platform API client, and make sure the environment "
+            f"ID can be resolved.{fallback}"
+        ),
+    )
+
+
+def _bot_id_missing(checkpoint_id: str, row: dict) -> CheckResult:
+    return _api_result(
+        checkpoint_id=checkpoint_id,
+        row=row,
+        status=Status.SKIPPED,
+        result="No configured agent botId was found in .local/config.json.",
+        remediation=(
+            "Run /setup or update .local/config.json so the active ESS agent has "
+            "a botId, then re-run FlightCheck."
+        ),
+    )
+
+
+def _check_pub_001_export(runner, row: dict) -> CheckResult:
+    client = getattr(runner, "minimalbots", None)
+    if client is None:
+        return _minimalbots_unavailable("PUB-001", row)
+
+    bot_id = _configured_bot_id(runner)
+    if not bot_id:
+        return _bot_id_missing("PUB-001", row)
+
+    try:
+        package = client.export(bot_id)
+    except Exception as e:  # noqa: BLE001 - surface client failure in report
+        return _api_result(
+            checkpoint_id="PUB-001",
+            row=row,
+            status=Status.ERROR,
+            result=f"minimalBots ALM export failed for configured agent {bot_id}: {e}",
+            remediation=(
+                "Confirm the signed-in maker has CopilotStudio.MinimalBot.ReadWrite "
+                "access for this environment, then re-run FlightCheck."
+            ),
+        )
+
+    if not package:
+        return _api_result(
+            checkpoint_id="PUB-001",
+            row=row,
+            status=Status.FAILED,
+            result=f"minimalBots ALM export returned an empty package for {bot_id}.",
+            remediation=(
+                "Open the agent in Copilot Studio and confirm it can be exported. "
+                "If export still returns no bytes, fix the agent/package issue "
+                "before promoting it."
+            ),
+        )
+
+    if not package.startswith(ZIP_MAGIC):
+        return _api_result(
+            checkpoint_id="PUB-001",
+            row=row,
+            status=Status.FAILED,
+            result=(
+                f"minimalBots ALM export returned {len(package)} bytes for {bot_id}, "
+                "but the payload is not a zip package."
+            ),
+            remediation=(
+                "Re-run export from Copilot Studio or Power Apps. The promotion "
+                "artifact must be a valid .zip package."
+            ),
+        )
+
+    return _api_result(
+        checkpoint_id="PUB-001",
+        row=row,
+        status=Status.PASSED,
+        result=(
+            f"minimalBots ALM export returned a valid zip package for {bot_id} "
+            f"({len(package)} bytes)."
+        ),
+        remediation="No action required for PUB-001.",
+    )
+
+
+def _pub_002_requires_opt_in(row: dict) -> CheckResult:
+    return _api_result(
+        checkpoint_id="PUB-002",
+        row=row,
+        status=Status.SKIPPED,
+        result=(
+            "PUB-002 did not run because the ALM import probe was not explicitly "
+            "enabled. FlightCheck stayed read-only and did not create anything."
+        ),
+        remediation=(
+            "Re-run FlightCheck with --alm-import-probe to export the configured "
+            "agent, import it as a transient Dev agent, and delete that transient "
+            "agent in a finally block before the check reports. Manual fallback: "
+            f"{row['remediation']}"
+        ),
+    )
+
+
+def _check_pub_002_import_probe(runner, row: dict) -> CheckResult:
+    if not bool(getattr(runner, "alm_import_probe", False)):
+        return _pub_002_requires_opt_in(row)
+
+    client = getattr(runner, "minimalbots", None)
+    if client is None:
+        return _minimalbots_unavailable("PUB-002", row)
+
+    bot_id = _configured_bot_id(runner)
+    if not bot_id:
+        return _bot_id_missing("PUB-002", row)
+
+    imported_bot_id: str | None = None
+    cleanup_succeeded = False
+    import_result: dict | None = None
+    try:
+        package = client.export(bot_id)
+        if not package or not package.startswith(ZIP_MAGIC):
+            return _api_result(
+                checkpoint_id="PUB-002",
+                row=row,
+                status=Status.FAILED,
+                result=(
+                    "PUB-002 could not obtain a valid ALM export package to use "
+                    "for the import probe."
+                ),
+                remediation=(
+                    "Fix PUB-001 first. The import probe needs the target agent's "
+                    "exported .zip package."
+                ),
+            )
+
+        import_result = client.import_package(package)
+        if not isinstance(import_result, dict):
+            return _api_result(
+                checkpoint_id="PUB-002",
+                row=row,
+                status=Status.FAILED,
+                result="minimalBots ALM import returned a non-object response.",
+                remediation="Retry the import after confirming minimalBots ALM API health.",
+            )
+
+        if import_result.get("_error") == "schema_collision":
+            return _api_result(
+                checkpoint_id="PUB-002",
+                row=row,
+                status=Status.FAILED,
+                result=(
+                    "minimalBots ALM import returned HTTP 409 schema_collision. "
+                    "The package could not mint a new transient agent."
+                ),
+                remediation=(
+                    "Retry without a schemaName override. If the collision persists, "
+                    "capture the minimalBots ALM response and investigate the package "
+                    "schema identity before promotion."
+                ),
+            )
+
+        if import_result.get("_error"):
+            return _api_result(
+                checkpoint_id="PUB-002",
+                row=row,
+                status=Status.FAILED,
+                result=(
+                    "minimalBots ALM import failed with "
+                    f"{import_result.get('_error')} (status {import_result.get('_status', 'unknown')})."
+                ),
+                remediation=(
+                    "Confirm the maker has import permission and the minimalBots "
+                    "ALM API is reachable for this environment."
+                ),
+            )
+
+        imported_bot_id = str(import_result.get("cdsBotId") or "").strip()
+        schema_name = str(import_result.get("schemaName") or "").strip()
+        if not imported_bot_id or not schema_name:
+            return _api_result(
+                checkpoint_id="PUB-002",
+                row=row,
+                status=Status.FAILED,
+                result=(
+                    "minimalBots ALM import did not return both cdsBotId and "
+                    "schemaName for the transient agent."
+                ),
+                remediation=(
+                    "Treat this as a failed import. The API must return the "
+                    "transient agent ID so FlightCheck can verify cleanup."
+                ),
+            )
+    except Exception as e:  # noqa: BLE001 - cleanup still runs in finally
+        return _api_result(
+            checkpoint_id="PUB-002",
+            row=row,
+            status=Status.ERROR,
+            result=f"minimalBots ALM import probe failed: {e}",
+            remediation=(
+                "Review the minimalBots ALM API error, then re-run with "
+                "--alm-import-probe after the underlying issue is fixed."
+            ),
+        )
+    finally:
+        if imported_bot_id:
+            try:
+                cleanup_succeeded = bool(client.delete_bot(imported_bot_id))
+            except Exception:  # noqa: BLE001 - reported below through success flag
+                cleanup_succeeded = False
+
+    if not cleanup_succeeded:
+        return _api_result(
+            checkpoint_id="PUB-002",
+            row=row,
+            status=Status.FAILED,
+            result=(
+                f"minimalBots ALM import created transient agent {imported_bot_id}, "
+                "but cleanup did not confirm deletion."
+            ),
+            remediation=(
+                "Delete the transient agent manually from Copilot Studio or the "
+                "minimalBots API before re-running the probe."
+            ),
+        )
+
+    return _api_result(
+        checkpoint_id="PUB-002",
+        row=row,
+        status=Status.PASSED,
+        result=(
+            f"minimalBots ALM import created transient agent {imported_bot_id} "
+            f"with schema {import_result.get('schemaName')}, and cleanup deleted it."
+        ),
+        remediation="No action required for PUB-002.",
+    )
 
 
 def _qa_remediation(runner, action: str, doc_anchor: str) -> str:
@@ -259,15 +535,21 @@ def _build_checks(runner) -> list[dict]:
 
 
 def run_publishing_checks(runner) -> list[CheckResult]:
-    """Return the publishing/QA checklist as MANUAL results.
+    """Return publishing/QA checks, using minimalBots ALM where available.
 
-    None of these checks reads an API — they're organizational gates
-    or actions on portals the kit doesn't traverse. Emitting them as
-    MANUAL (not NOT_CONFIGURED) keeps the report honest: nothing is
-    misconfigured, the operator just has work the kit can't witness.
+    PUB-001 validates export without mutating the environment. PUB-002 is
+    intentionally gated by explicit opt-in because it creates a transient Dev
+    agent, then deletes it in a finally block.
     """
-    return [
-        CheckResult(
+    results: list[CheckResult] = []
+    for c in _build_checks(runner):
+        if c["id"] == "PUB-001":
+            results.append(_check_pub_001_export(runner, c))
+            continue
+        if c["id"] == "PUB-002":
+            results.append(_check_pub_002_import_probe(runner, c))
+            continue
+        results.append(CheckResult(
             checkpoint_id=c["id"],
             category="Publishing",
             priority=c["p"],
@@ -277,6 +559,5 @@ def run_publishing_checks(runner) -> list[CheckResult]:
             remediation=c["remediation"],
             doc_link=c["doc_link"],
             roles=c["roles"],
-        )
-        for c in _build_checks(runner)
-    ]
+        ))
+    return results

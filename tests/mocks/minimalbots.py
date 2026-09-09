@@ -23,6 +23,15 @@ MOCK_HOST_PROD = (
 )
 
 
+def export_package() -> bytes:
+    """Return a minimal documented ALM export package payload.
+
+    Source: ``swagger.json`` documents the export response as
+    ``application/octet-stream`` containing a zip package.
+    """
+    return b"PK\x03\x04minimal-bot-package"
+
+
 def component_change_set() -> dict:
     """Return a documented PvaComponentChangeSet sample.
 

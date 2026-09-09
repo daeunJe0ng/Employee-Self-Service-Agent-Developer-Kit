@@ -780,6 +780,7 @@ def _run_single_checkpoint(args):
     runner.pva = pva
     runner.powerplatform = powerplatform
     runner.minimalbots = minimalbots
+    runner.alm_import_probe = bool(getattr(args, "alm_import_probe", False))
     runner.azure_arm = None
 
     # No runtime-reachability consent here: INFRA-003 is not individually
@@ -946,6 +947,16 @@ def main():
             "--no-runtime-reachability forces it off. Omit both to be asked "
             "interactively during a normal run; non-interactive runs stay "
             "read-only and report INFRA-003 as MANUAL guidance."
+        ),
+    )
+    parser.add_argument(
+        "--alm-import-probe",
+        action="store_true",
+        help=(
+            "Run PUB-002 as a self-cleaning minimalBots ALM import probe. "
+            "This exports the configured agent, imports it as a transient Dev "
+            "agent, then deletes that transient agent in a finally block. Omit "
+            "this flag to keep publishing checks read-only."
         ),
     )
     parser.add_argument(
@@ -1203,7 +1214,7 @@ def main():
     else:
         print("Skipping Copilot Studio auth (not required for this scope).")
 
-    if args.scope in ("full", "local", "graphconnector") and env_id:
+    if args.scope in ("full", "local", "graphconnector", "publishing") and env_id:
         print("Authenticating to Copilot Studio minimalBots PPAPI...")
         minimalbots = MinimalBotsClient(tenant_id, env_id)
         try:
@@ -1213,7 +1224,7 @@ def main():
             print(f"  Copilot Studio minimalBots PPAPI: WARNING — {e}")
             print("  (DA re-point minimalBots checks will be skipped)")
             minimalbots = None
-    elif args.scope in ("full", "local", "graphconnector"):
+    elif args.scope in ("full", "local", "graphconnector", "publishing"):
         print("Skipping Copilot Studio minimalBots PPAPI auth (no environment ID).")
 
     # Gate the PayG billing clients (PRE-005) on scope. Only the
@@ -1254,6 +1265,7 @@ def main():
     runner.pva = pva
     runner.powerplatform = powerplatform
     runner.minimalbots = minimalbots
+    runner.alm_import_probe = bool(getattr(args, "alm_import_probe", False))
     runner.azure_arm = azure_arm
 
     # --- Target selection (standalone scope runs only) ---
