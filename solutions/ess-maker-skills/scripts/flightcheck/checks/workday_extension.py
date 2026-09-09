@@ -25,8 +25,10 @@ via ``--checkpoint``:
     bound to an **active** connection, and its owner is echoed so the operator
     can confirm it is their **own** account. Programmatic PASS/FAIL on a
     documented-tier Dataverse ``connectionreferences`` read.
-  * ``WD-REST-001`` (S5.5) — the captured ``restBaseUrl`` is present and
-    **trimmed to** ``/api``. Pure-config check, no client.
+  * ``WD-REST-001`` (S5.5) — the Workday connection reference's
+    ``sharedConnectionParameters.values.restBaseUri`` is present and
+    **trimmed to** ``/api``. Read through the minimalBots PPAPI components
+    surface.
   * ``WD-REST-002`` (S5.7) — the agent's ``user-context-setup.mcs.yml`` topic
     contains a ``BeginDialog`` redirect to the Workday user-context system topic
     (``WorkdaySystemGetUserContextV2`` on the simplified pack). Pure local-file
@@ -58,6 +60,7 @@ import sys
 from pathlib import Path
 
 from ..runner import CheckResult, Priority, Role, Status
+from ._minimalbots_connection_refs import workday_shared_connection_parameters
 
 # scripts/auth.py is on sys.path via cli.py at runtime (tests add it too); this
 # mirrors checks/environment.py's top-level import so query_all is patchable as
@@ -447,8 +450,25 @@ def _check_dv_connection(runner) -> list[CheckResult]:
 
 
 def _check_rest_base_url(runner) -> list[CheckResult]:
-    config = getattr(runner, "config", None) or {}
-    rest = config.get("restBaseUrl")
+    values, unavailable_reason = workday_shared_connection_parameters(runner)
+    if values is None:
+        return [CheckResult(roles=_MAKER_ROLES,
+            checkpoint_id="WD-REST-001", category=_CATEGORY,
+            priority=Priority.HIGH.value, status=Status.SKIPPED.value,
+            description=_REST_URL_DESC,
+            result=(
+                "Unable to read the Workday REST base URI from minimalBots "
+                f"connection references: {unavailable_reason}."
+            ),
+            remediation=(
+                "Run FlightCheck with Copilot Studio minimalBots PPAPI access "
+                "and a configured agent botId, then reconnect or repair the "
+                "Workday connection reference if it is missing."
+            ),
+            doc_link=_DOC_SIMPLIFIED,
+        )]
+
+    rest = values.get("restBaseUri")
 
     if not rest:
         return [CheckResult(roles=_MAKER_ROLES,
@@ -456,12 +476,12 @@ def _check_rest_base_url(runner) -> list[CheckResult]:
             priority=Priority.HIGH.value, status=Status.NOT_CONFIGURED.value,
             description=_REST_URL_DESC,
             result=(
-                "No Workday REST base URL has been captured yet (restBaseUrl "
-                "is empty)."
+                "No Workday REST base URI has been captured yet "
+                "(sharedConnectionParameters.values.restBaseUri is empty)."
             ),
             remediation=(
-                "Capture the Workday REST base URL and trim it to end at "
-                "'/api' (e.g. https://<host>/ccx/api)."
+                "Reconnect the Workday connection and capture the REST base "
+                "URI trimmed to end at '/api' (e.g. https://<host>/ccx/api)."
             ),
             doc_link=_DOC_SIMPLIFIED,
         )]
@@ -472,7 +492,7 @@ def _check_rest_base_url(runner) -> list[CheckResult]:
             checkpoint_id="WD-REST-001", category=_CATEGORY,
             priority=Priority.HIGH.value, status=Status.PASSED.value,
             description=_REST_URL_DESC,
-            result=f"REST base URL is present and trimmed to '/api': {rest}",
+            result=f"REST base URI is present and trimmed to '/api': {rest}",
             doc_link=_DOC_SIMPLIFIED,
         )]
 
@@ -481,13 +501,13 @@ def _check_rest_base_url(runner) -> list[CheckResult]:
         priority=Priority.HIGH.value, status=Status.FAILED.value,
         description=_REST_URL_DESC,
         result=(
-            f"REST base URL is present but not trimmed to '/api': {rest}. It "
+            f"REST base URI is present but not trimmed to '/api': {rest}. It "
             "must end at '/api' with no trailing path or version segment."
         ),
         remediation=(
-            "Edit the captured restBaseUrl so it ends at '/api' (e.g. "
-            "https://<host>/ccx/api) — remove any trailing path, version, or "
-            "resource segment."
+            "Edit the Workday connection's restBaseUri so it ends at '/api' "
+            "(e.g. https://<host>/ccx/api) — remove any trailing path, "
+            "version, or resource segment."
         ),
         doc_link=_DOC_SIMPLIFIED,
     )]

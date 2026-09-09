@@ -30,7 +30,8 @@ check, and assert on the CheckResult list it produces.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -38,8 +39,10 @@ import responses
 
 from tests.conftest import require_validated_mock
 from tests.mocks import dataverse as dv
+from tests.mocks import minimalbots as mb
 
 require_validated_mock(dv)
+require_validated_mock(mb)
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -55,6 +58,8 @@ require_validated_mock(dv)
 class _MinimalRunner:
     env_url: str
     dv_token: str
+    config: dict[str, Any] = field(default_factory=dict)
+    minimalbots: Any = None
 
 
 @pytest.fixture
@@ -135,9 +140,115 @@ def _result_by_id(results: list, checkpoint_id: str):
     return matches[0]
 
 
+def _minimalbots_client(fake_token: str):
+    from flightcheck.minimalbots_client import MinimalBotsClient
+
+    client = MinimalBotsClient(
+        tenant_id="00000000-0000-0000-0000-000000001111",
+        environment_id=mb.MOCK_ENV_ID_TEST_SUFFIX_0,
+        ring="test",
+    )
+    client._token = fake_token
+    return client
+
+
+def _register_minimalbots_components(payload: dict) -> None:
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/api/{mb.MOCK_BOT_ID}/components",
+        json=payload,
+        status=200,
+        match=[
+            responses.matchers.query_param_matcher(
+                {"api-version": "2024-10-01"}
+            )
+        ],
+    )
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Tests
 # ───────────────────────────────────────────────────────────────────────
+
+
+class TestMinimalBotsSharedConnectionParameters:
+    """WD-ENV-001 reads DA Workday tenant config from minimalBots."""
+
+    @responses.activate
+    def test_workday_shared_parameters_present_passes(
+        self, fake_dataverse_url: str, fake_token: str
+    ) -> None:
+        from flightcheck.checks.workday import _check_env_vars
+
+        _register_minimalbots_components(mb.component_change_set())
+        runner = _MinimalRunner(
+            env_url=fake_dataverse_url,
+            dv_token=fake_token,
+            config={"agent": {"botId": mb.MOCK_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
+        )
+
+        results = _check_env_vars(runner)
+
+        assert {r.checkpoint_id for r in results} == {"WD-ENV-001"}
+        wd_001 = _result_by_id(results, "WD-ENV-001")
+        assert wd_001.status == "Passed"
+        assert "sharedConnectionParameters.values" in wd_001.result
+        assert mb.MOCK_WORKDAY_TENANT in wd_001.result
+
+    @responses.activate
+    def test_workday_reference_missing_fails(
+        self, fake_dataverse_url: str, fake_token: str
+    ) -> None:
+        from flightcheck.checks.workday import _check_env_vars
+
+        _register_minimalbots_components(mb.component_change_set_without_workday())
+        runner = _MinimalRunner(
+            env_url=fake_dataverse_url,
+            dv_token=fake_token,
+            config={"agent": {"botId": mb.MOCK_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
+        )
+
+        wd_001 = _result_by_id(_check_env_vars(runner), "WD-ENV-001")
+
+        assert wd_001.status == "Failed"
+        assert "Workday connection reference was not found" in wd_001.result
+        assert "reconnect or repair" in wd_001.remediation
+
+    @responses.activate
+    def test_required_shared_parameter_missing_fails(
+        self, fake_dataverse_url: str, fake_token: str
+    ) -> None:
+        from flightcheck.checks.workday import _check_env_vars
+
+        shared = mb.workday_shared_connection_parameters(tenant_name="")
+        payload = mb.component_change_set()
+        payload["connectionReferenceChanges"] = [
+            {
+                "connectionReference": {
+                    "connectionReferenceLogicalName": (
+                        "cr123_shared_workdaysoap.shared_workdaysoap.workday"
+                    ),
+                    "connectorId": "/providers/Microsoft.PowerApps/apis/shared_workdaysoap",
+                    "displayName": "Workday SOAP",
+                    "sharedConnectionParameters": json.dumps(shared),
+                }
+            }
+        ]
+        _register_minimalbots_components(payload)
+        runner = _MinimalRunner(
+            env_url=fake_dataverse_url,
+            dv_token=fake_token,
+            config={"agent": {"botId": mb.MOCK_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
+        )
+
+        wd_001 = _result_by_id(_check_env_vars(runner), "WD-ENV-001")
+
+        assert wd_001.status == "Failed"
+        assert "tenantName" in wd_001.result
+        assert "Reconnect the Workday connector" in wd_001.remediation
 
 
 class TestGoodConfig:
@@ -333,18 +444,12 @@ class TestEdgeCases:
 
 
 class TestSimplifiedInstallGate:
-    """Pins the install-flavor gating contract for `_check_env_vars`
-    (see AGENTS.md design principle #11).
+    """Pins the simplified install contract for `_check_env_vars`.
 
-    The three env vars (WD-ENV-001/002/003) are ISU/RaaS-only and are
-    not consumed by the simplified Workday install (which uses OBO
-    with the signed-in user's identity). The check gates on the
-    `runner._workday_package_flavor` verdict set by WD-PKG-001:
+    WD-ENV-001 is re-pointed to the DA Workday connection reference's
+    sharedConnectionParameters. WD-ENV-002/003 remain ISU/RaaS-only
+    legacy Dataverse environment variables and still skip on simplified.
 
-      * "simplified" → all three checkpoints emit a SKIPPED that
-        explains why the check doesn't apply and points back at
-        WD-PKG-001 for ambiguity (`{ff0df}`-only could also mean a
-        broken full install).
       * Any other verdict (None / "full" / "partial" / "unknown" /
         "none" / "skipped") → run the existing logic. The "skip only
         on a positive INCOMPATIBLE match" rule is the safety
@@ -352,11 +457,8 @@ class TestSimplifiedInstallGate:
         signal, not silence.
     """
 
-    def test_simplified_skips_all_three_with_correct_priorities(self) -> None:
-        """`flavor == "simplified"` → exactly 3 SKIPPED rows (one per
-        env var), priorities preserved (WD-ENV-001 = Critical, the
-        other two = High), and zero HTTP calls (no `@responses.activate`
-        is needed because the gate fires before any Dataverse read)."""
+    def test_simplified_without_minimalbots_skips_all_three_with_correct_priorities(self) -> None:
+        """`flavor == "simplified"` without minimalBots keeps all checks non-networked."""
         from flightcheck.checks.workday import _check_env_vars
 
         runner = _MinimalRunner(env_url="https://dv.example", dv_token="dv-token")
@@ -365,20 +467,17 @@ class TestSimplifiedInstallGate:
         results = _check_env_vars(runner)
 
         assert {r.checkpoint_id for r in results} == {"WD-ENV-001", "WD-ENV-002", "WD-ENV-003"}
-        for r in results:
+        wd_001 = _result_by_id(results, "WD-ENV-001")
+        assert wd_001.status == "Skipped"
+        assert "minimalBots client is not available" in wd_001.result
+
+        for checkpoint_id in ("WD-ENV-002", "WD-ENV-003"):
+            r = _result_by_id(results, checkpoint_id)
             assert r.status == "Skipped"
-            # The result text must name the fingerprint check by ID so
-            # operators can trace the gating decision.
             assert "WD-PKG-001" in r.result
             assert "simplified" in r.result.lower()
-            # The remediation must surface the `{ff0df}`-only ambiguity
-            # so an operator who intended the full install doesn't
-            # dismiss the SKIP as benign.
             assert "Generic User" in r.remediation
             assert "Context Generic User" in r.remediation
-            # The doc link points operators to the simplified install
-            # documentation (the detected flavor), per AGENTS.md
-            # principle #11.e.
             assert "workday-simplified-setup" in r.doc_link
 
         # WD-ENV-001 is critical; the other two are high.

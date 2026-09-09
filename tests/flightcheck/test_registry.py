@@ -83,7 +83,14 @@ class TestResolve:
         assert registry.resolve("WD-CONN-003").key == "WD-CONN"
         assert registry.resolve("WD-FLOW-002").key == "WD-FLOW"
         assert registry.resolve("WD-WF-007").key == "WD-WF"
-        assert registry.resolve("WD-ENV-001").key == "WD-ENV"
+        assert registry.resolve("WD-ENV-002").key == "WD-ENV"
+
+    def test_wd_env_001_exact_beats_legacy_family(self):
+        spec = registry.resolve("WD-ENV-001")
+        assert spec.key == "WD-ENV-001"
+        assert spec.clients == frozenset({registry.MINIMALBOTS})
+        assert spec.requires_dataverse_endpoint is False
+        assert Role.ESS_MAKER.value in spec.roles
 
     def test_wildcard_family_request_resolves(self):
         assert registry.resolve("WD-FLOW-*").key == "WD-FLOW"
@@ -293,13 +300,19 @@ class TestWorkdayExtensionCheckpoints:
         assert spec.prereqs == ()
         assert Role.ESS_MAKER.value in spec.roles
 
-    def test_rest_and_local_checks_are_clientless(self):
-        for cp in ("WD-REST-001", "WD-REST-002"):
-            spec = registry.resolve(cp)
-            assert spec.clients == frozenset()
-            assert spec.requires_dataverse_endpoint is False
-            assert spec.prereqs == ()
-            assert Role.ESS_MAKER.value in spec.roles
+    def test_rest_base_uri_check_declares_minimalbots(self):
+        spec = registry.resolve("WD-REST-001")
+        assert spec.clients == frozenset({registry.MINIMALBOTS})
+        assert spec.requires_dataverse_endpoint is False
+        assert spec.prereqs == ()
+        assert Role.ESS_MAKER.value in spec.roles
+
+    def test_local_rest_topic_check_is_clientless(self):
+        spec = registry.resolve("WD-REST-002")
+        assert spec.clients == frozenset()
+        assert spec.requires_dataverse_endpoint is False
+        assert spec.prereqs == ()
+        assert Role.ESS_MAKER.value in spec.roles
 
     def test_net_check_is_clientless_and_ppadmin_gated(self):
         spec = registry.resolve("WD-NET-001")

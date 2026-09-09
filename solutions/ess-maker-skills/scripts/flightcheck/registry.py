@@ -313,8 +313,20 @@ _SPECS: list[CheckpointSpec] = [
         roles=(Role.WORKDAY_ADMIN.value,),
         is_family=True,
     ),
-    # WD-ENV-* — legacy Workday environment-variable checks (banned on the
-    # simplified flavor; registered so the family resolves).
+    # WD-ENV-001 — DA Workday tenant config check. Exact-first resolution keeps
+    # this distinct from the legacy WD-ENV family below.
+    CheckpointSpec(
+        key="WD-ENV-001",
+        category_fn=run_workday_checks,
+        category_label="Workday",
+        clients=frozenset({MINIMALBOTS}),
+        requires_config=True,
+        requires_dataverse_endpoint=False,
+        prereqs=("WD-001",),
+        priority=Priority.CRITICAL.value,
+        roles=(Role.ESS_MAKER.value,),
+    ),
+    # WD-ENV-* — legacy Workday environment-variable checks for WD-ENV-002/003.
     CheckpointSpec(
         key="WD-ENV",
         category_fn=run_workday_checks,
@@ -453,12 +465,13 @@ _SPECS: list[CheckpointSpec] = [
         priority=Priority.HIGH.value,
         roles=(Role.ESS_MAKER.value,),
     ),
-    # WD-REST-001 — pure config check (restBaseUrl trimmed to /api), no client.
+    # WD-REST-001 — Workday connection-reference sharedConnectionParameters
+    # check (restBaseUri trimmed to /api) through minimalBots.
     CheckpointSpec(
         key="WD-REST-001",
         category_fn=run_workday_extension_checks,
         category_label="Workday Extension",
-        clients=frozenset(),
+        clients=frozenset({MINIMALBOTS}),
         requires_config=True,
         requires_dataverse_endpoint=False,
         priority=Priority.HIGH.value,

@@ -39,6 +39,7 @@ from defusedxml.common import DefusedXmlException
 
 from ..runner import CheckResult, Priority, Role, Status
 from ._maker_urls import maker_connections_url
+from ._minimalbots_connection_refs import workday_shared_connection_parameters
 from ._saml_utils import (
     WORKDAY_SAML_SP_FILTER,
     WORKDAY_SSO_TUTORIAL_DOC,
@@ -69,6 +70,13 @@ ENV_VARS = {
         "description": "Report instance name",
     },
 }
+
+_WORKDAY_SHARED_ENV_KEYS = (
+    "tenantName",
+    "token:ResourceUri",
+    "token:WorkdayTokenUri",
+    "token:WorkdayClientId",
+)
 
 # ─────────────────────────────────────────────────────────────────────────
 # Workday install-flavor fingerprint (WD-PKG-001 / WD-CONN-012)
@@ -1648,18 +1656,71 @@ def _simplified_install_skip(
     )
 
 
-def _check_env_vars(runner) -> list[CheckResult]:
-    """Validate Workday environment variables in Dataverse.
+def _check_minimalbots_env_config(runner) -> list[CheckResult]:
+    """WD-ENV-001 — validate Workday tenant config from minimalBots."""
+    values, unavailable_reason = workday_shared_connection_parameters(runner)
+    if values is None:
+        no_client = unavailable_reason == "minimalBots client is not available"
+        status = Status.SKIPPED.value if no_client else Status.FAILED.value
+        result = (
+            "Unable to read the Workday tenant configuration from minimalBots "
+            f"connection references: {unavailable_reason}."
+        )
+        remediation = (
+            "Run FlightCheck with Copilot Studio minimalBots PPAPI access and a "
+            "configured agent botId, then reconnect or repair the Workday "
+            "connection reference if it is missing."
+        )
+        return [CheckResult(roles=[Role.ESS_MAKER.value],
+            checkpoint_id="WD-ENV-001", category="Workday",
+            priority=Priority.CRITICAL.value, status=status,
+            description="Workday tenant and OAuth connection configuration",
+            result=result,
+            remediation=None if no_client else remediation,
+            doc_link=f"{DOC_BASE}/workday-simplified-setup",
+        )]
 
-    Gated on `runner._workday_package_flavor`: skipped on
-    `"simplified"` because the three env vars (ISU account name,
-    RaaS report name, RaaS report instance) are only consumed by the
-    full / legacy install's RaaS code path. See
-    `_simplified_install_skip` for the SKIP message contract.
-    """
+    missing = [key for key in _WORKDAY_SHARED_ENV_KEYS if not values.get(key)]
+    if missing:
+        return [CheckResult(roles=[Role.ESS_MAKER.value],
+            checkpoint_id="WD-ENV-001", category="Workday",
+            priority=Priority.CRITICAL.value, status=Status.FAILED.value,
+            description="Workday tenant and OAuth connection configuration",
+            result=(
+                "Workday connection reference is missing required "
+                "sharedConnectionParameters.values entries: "
+                f"{', '.join(missing)}."
+            ),
+            remediation=(
+                "Reconnect the Workday connector from Copilot Studio so the "
+                "tenantName, ResourceUri, token URI, and client ID are captured "
+                "on the Workday connection reference."
+            ),
+            doc_link=f"{DOC_BASE}/workday-simplified-setup",
+        )]
+
+    return [CheckResult(roles=[Role.ESS_MAKER.value],
+        checkpoint_id="WD-ENV-001", category="Workday",
+        priority=Priority.CRITICAL.value, status=Status.PASSED.value,
+        description="Workday tenant and OAuth connection configuration",
+        result=(
+            "Workday tenant configuration is present on "
+            "sharedConnectionParameters.values: tenantName="
+            f"{values['tenantName']}."
+        ),
+        doc_link=f"{DOC_BASE}/workday-simplified-setup",
+    )]
+
+
+def _check_env_vars(runner) -> list[CheckResult]:
+    """Validate Workday environment variables or DA shared connection params."""
     flavor = getattr(runner, "_workday_package_flavor", None)
+    if getattr(runner, "minimalbots", None) is not None:
+        return _check_minimalbots_env_config(runner)
+
     if flavor == "simplified":
-        return [
+        minimalbots_result = _check_minimalbots_env_config(runner)
+        legacy_skips = [
             _simplified_install_skip(
                 checkpoint_id=meta["id"],
                 description=meta["description"],
@@ -1669,7 +1730,9 @@ def _check_env_vars(runner) -> list[CheckResult]:
                 ),
             )
             for meta in ENV_VARS.values()
+            if meta["id"] != "WD-ENV-001"
         ]
+        return minimalbots_result + legacy_skips
 
     results = []
     env_url = runner.env_url

@@ -13,7 +13,8 @@ Coverage per emitter:
   * DV-CONN-001 — PASS/FAIL/NOT_CONFIGURED/SKIPPED over a documented-tier
     Dataverse ``connectionreferences`` read (stubbed with ``responses``); owner
     echo via the ``validated`` pp_admin mock.
-  * WD-REST-001 — pure-config check (restBaseUrl trimmed to '/api').
+  * WD-REST-001 — minimalBots Workday connection-reference
+    sharedConnectionParameters check (restBaseUri trimmed to '/api').
   * WD-REST-002 — pure local-file check (user-context redirect topic);
     SKIPPED on the legacy install path.
   * WD-NET-001 — always-MANUAL InfoSec/IT attestation (never PASSED).
@@ -32,9 +33,11 @@ import responses
 
 from tests.conftest import require_validated_mock
 from tests.mocks import dataverse as dv
+from tests.mocks import minimalbots as mb
 from tests.mocks import pp_admin as pp
 
 require_validated_mock(dv)
+require_validated_mock(mb)
 require_validated_mock(pp)
 
 from flightcheck.checks import workday_extension as wx  # noqa: E402
@@ -67,6 +70,7 @@ class _Runner:
     config: Any = field(default_factory=dict)
     env_url: str | None = None
     dv_token: str | None = None
+    minimalbots: Any = None
     pp_admin: Any = None
     env_id: str | None = None
     _workday_connection_refs: list[dict[str, Any]] = field(default_factory=list)
@@ -107,6 +111,32 @@ def _register_refs(base_url: str, refs: list[dict[str, Any]]) -> None:
         url=f"{base_url}/api/data/v9.2/connectionreferences",
         json=dv.collection(refs),
         status=200,
+    )
+
+
+def _minimalbots_client(fake_token: str):
+    from flightcheck.minimalbots_client import MinimalBotsClient
+
+    client = MinimalBotsClient(
+        tenant_id="00000000-0000-0000-0000-000000001111",
+        environment_id=mb.MOCK_ENV_ID_TEST_SUFFIX_0,
+        ring="test",
+    )
+    client._token = fake_token
+    return client
+
+
+def _register_minimalbots_components(payload: dict) -> None:
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/api/{mb.MOCK_BOT_ID}/components",
+        json=payload,
+        status=200,
+        match=[
+            responses.matchers.query_param_matcher(
+                {"api-version": "2024-10-01"}
+            )
+        ],
     )
 
 
@@ -313,38 +343,83 @@ class TestDataverseConnection:
 
 
 class TestRestBaseUrl:
-    def test_trimmed_url_passes(self):
-        runner = _Runner(config={"restBaseUrl": "https://wd.example.com/ccx/api"})
+    @responses.activate
+    def test_trimmed_url_passes(self, fake_token):
+        _register_minimalbots_components(mb.component_change_set())
+        runner = _Runner(
+            config={"agent": {"botId": mb.MOCK_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
+        )
         r = _by_id(wx.run_workday_extension_checks(runner))["WD-REST-001"]
 
         assert r.status == Status.PASSED.value
         assert "trimmed to '/api'" in r.result
-        assert "https://wd.example.com/ccx/api" in r.result
+        assert mb.MOCK_WORKDAY_REST_BASE_URI in r.result
 
-    def test_trailing_slash_still_passes(self):
-        runner = _Runner(config={"restBaseUrl": "https://wd.example.com/ccx/api/"})
+    @responses.activate
+    def test_trailing_slash_still_passes(self, fake_token):
+        payload = mb.component_change_set()
+        payload["connectionReferenceChanges"] = [
+            mb.workday_connection_reference(rest_base_uri=f"{mb.MOCK_WORKDAY_REST_BASE_URI}/")
+        ]
+        _register_minimalbots_components(payload)
+        runner = _Runner(
+            config={"agent": {"botId": mb.MOCK_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
+        )
         r = _by_id(wx.run_workday_extension_checks(runner))["WD-REST-001"]
 
         assert r.status == Status.PASSED.value
 
-    def test_untrimmed_url_fails(self):
+    @responses.activate
+    def test_untrimmed_url_fails(self, fake_token):
+        payload = mb.component_change_set()
+        payload["connectionReferenceChanges"] = [
+            mb.workday_connection_reference(
+                rest_base_uri=f"{mb.MOCK_WORKDAY_REST_BASE_URI}/staffing/v1"
+            )
+        ]
+        _register_minimalbots_components(payload)
         runner = _Runner(
-            config={"restBaseUrl": "https://wd.example.com/ccx/api/staffing/v1"}
+            config={"agent": {"botId": mb.MOCK_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
         )
         r = _by_id(wx.run_workday_extension_checks(runner))["WD-REST-001"]
 
         assert r.status == Status.FAILED.value
         assert "not trimmed to '/api'" in r.result
-        assert "https://wd.example.com/ccx/api/staffing/v1" in r.result
+        assert f"{mb.MOCK_WORKDAY_REST_BASE_URI}/staffing/v1" in r.result
         assert "remove any trailing path" in r.remediation
 
-    def test_absent_url_not_configured(self):
-        runner = _Runner(config={})
+    @responses.activate
+    def test_missing_workday_reference_skips(self, fake_token):
+        _register_minimalbots_components(mb.component_change_set_without_workday())
+        runner = _Runner(
+            config={"agent": {"botId": mb.MOCK_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
+        )
+        r = _by_id(wx.run_workday_extension_checks(runner))["WD-REST-001"]
+
+        assert r.status == Status.SKIPPED.value
+        assert "Workday connection reference was not found" in r.result
+        assert "minimalBots PPAPI access" in r.remediation
+
+    @responses.activate
+    def test_absent_rest_uri_not_configured(self, fake_token):
+        payload = mb.component_change_set()
+        payload["connectionReferenceChanges"] = [
+            mb.workday_connection_reference(rest_base_uri="")
+        ]
+        _register_minimalbots_components(payload)
+        runner = _Runner(
+            config={"agent": {"botId": mb.MOCK_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
+        )
         r = _by_id(wx.run_workday_extension_checks(runner))["WD-REST-001"]
 
         assert r.status == Status.NOT_CONFIGURED.value
-        assert "restBaseUrl is empty" in r.result
-        assert "trim it to end at '/api'" in r.remediation
+        assert "restBaseUri is empty" in r.result
+        assert "trimmed to end at '/api'" in r.remediation
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -503,12 +578,14 @@ class TestDispatcher:
         assert by_id["WD-NET-001"].status == Status.MANUAL.value
 
     def test_config_reading_emitters_warn_on_boom_config(self):
-        # A config whose .get raises breaks the three config-reading emitters;
-        # each degrades to WARNING and the run still returns all five rows.
+        # A config whose .get raises breaks the remaining config-reading
+        # emitters; WD-REST-001 now stops at the missing minimalBots client.
         results = wx.run_workday_extension_checks(_Runner(config=_BoomConfig()))
         by_id = _by_id(results)
 
         assert len(results) == 5
-        for cp in ("WD-REST-001", "WD-REST-002", "WD-NET-001"):
+        assert by_id["WD-REST-001"].status == Status.SKIPPED.value
+        assert "minimalBots client is not available" in by_id["WD-REST-001"].result
+        for cp in ("WD-REST-002", "WD-NET-001"):
             assert by_id[cp].status == Status.WARNING.value
             assert f"Unable to run {cp}" in by_id[cp].result
