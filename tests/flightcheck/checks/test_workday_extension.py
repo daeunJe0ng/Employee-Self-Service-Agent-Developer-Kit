@@ -10,9 +10,9 @@ Coverage per emitter:
     connection, degrades gracefully when it does not. Cached-ref read + a
     best-effort Power Platform admin owner echo — no cassette required (the
     admin connections listing is the ``validated`` pp_admin mock).
-  * DV-CONN-001 — PASS/FAIL/NOT_CONFIGURED/SKIPPED over a documented-tier
-    Dataverse ``connectionreferences`` read (stubbed with ``responses``); owner
-    echo via the ``validated`` pp_admin mock.
+  * DV-CONN-001 — PASS/FAIL/NOT_CONFIGURED/SKIPPED over the validated
+    minimalBots ``connectionReferenceChanges`` payload (stubbed with
+    ``responses``); owner echo via the ``validated`` pp_admin mock.
   * WD-REST-001 — pure-config check (restBaseUrl trimmed to '/api').
   * WD-REST-002 — pure local-file check (user-context redirect topic);
     SKIPPED on the legacy install path.
@@ -32,18 +32,15 @@ import responses
 
 from tests.conftest import require_validated_mock
 from tests.mocks import dataverse as dv
+from tests.mocks import minimalbots as mb
 from tests.mocks import pp_admin as pp
 
 require_validated_mock(dv)
+require_validated_mock(mb)
 require_validated_mock(pp)
 
 from flightcheck.checks import workday_extension as wx  # noqa: E402
 from flightcheck.runner import Priority, Role, Status  # noqa: E402
-
-_DV_CONNECTOR_ID = (
-    "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps"
-)
-
 
 # ─────────────────────────────────────────────────────────────────────
 # Minimal runner. The emitters read only these attributes; anything the
@@ -69,6 +66,7 @@ class _Runner:
     dv_token: str | None = None
     pp_admin: Any = None
     env_id: str | None = None
+    minimalbots: Any = None
     _workday_connection_refs: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -88,25 +86,25 @@ def _by_id(results):
     return {r.checkpoint_id: r for r in results}
 
 
-def _dv_ref(*, connection_id, statuscode=1):
-    """A Dataverse connection reference matching the extension pack's shipped
-    ref (connector shared_commondataserviceforapps, logical-name suffix
-    92b66)."""
-    return dv.connection_ref(
-        logical_name="msdyn_sharedcommondataserviceforapps_92b66",
-        display_name="Microsoft Dataverse",
-        connector_id=_DV_CONNECTOR_ID,
-        connection_id=connection_id,
-        statuscode=statuscode,
+def _minimalbots_client(fake_token: str):
+    from flightcheck.minimalbots_client import MinimalBotsClient
+
+    client = MinimalBotsClient(
+        tenant_id="00000000-0000-0000-0000-000000001111",
+        environment_id=mb.MOCK_ENV_ID_TEST_SUFFIX_0,
+        ring="test",
     )
+    client._token = fake_token
+    return client
 
 
-def _register_refs(base_url: str, refs: list[dict[str, Any]]) -> None:
+def _register_components(bot_id: str, payload: dict[str, Any]) -> None:
     responses.add(
-        method="GET",
-        url=f"{base_url}/api/data/v9.2/connectionreferences",
-        json=dv.collection(refs),
+        method="POST",
+        url=f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/api/{bot_id}/components",
+        json=payload,
         status=200,
+        match=[responses.matchers.query_param_matcher({"api-version": "2024-10-01"})],
     )
 
 
@@ -211,21 +209,16 @@ class TestConnectionAuth:
 
 class TestDataverseConnection:
     @responses.activate
-    def test_bound_active_with_owner_echo_passes(
-        self, fake_dataverse_url, fake_token
-    ):
-        _register_refs(
-            fake_dataverse_url,
-            [_dv_ref(connection_id="dv-conn-active", statuscode=1)],
-        )
+    def test_bound_active_with_owner_echo_passes(self, fake_token):
+        _register_components(mb.MOCK_GOOD_BOT_ID, mb.component_change_set())
         owner_conn = pp.connection(
-            name="dv-conn-active",
-            api_name="shared_commondataserviceforapps",
+            name="00000000000000000000000000000000",
+            api_name="shared_workdaysoap",
             extra_properties={"accountName": "maker@contoso.com"},
         )
         runner = _Runner(
-            env_url=fake_dataverse_url,
-            dv_token=fake_token,
+            config={"agent": {"botId": mb.MOCK_GOOD_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
             pp_admin=_FakePPAdmin([owner_conn]),
             env_id="env-1",
         )
@@ -237,14 +230,12 @@ class TestDataverseConnection:
         assert "your own account" in r.result
 
     @responses.activate
-    def test_passes_without_pp_admin_notes_owner_unreadable(
-        self, fake_dataverse_url, fake_token
-    ):
-        _register_refs(
-            fake_dataverse_url,
-            [_dv_ref(connection_id="dv-conn-active", statuscode=1)],
+    def test_passes_without_pp_admin_notes_owner_unreadable(self, fake_token):
+        _register_components(mb.MOCK_GOOD_BOT_ID, mb.component_change_set())
+        runner = _Runner(
+            config={"agent": {"botId": mb.MOCK_GOOD_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
         )
-        runner = _Runner(env_url=fake_dataverse_url, dv_token=fake_token)
         r = _by_id(wx.run_workday_extension_checks(runner))["DV-CONN-001"]
 
         assert r.status == Status.PASSED.value
@@ -252,25 +243,30 @@ class TestDataverseConnection:
         assert "your own account" in r.result
 
     @responses.activate
-    def test_unbound_fails(self, fake_dataverse_url, fake_token):
-        _register_refs(
-            fake_dataverse_url, [_dv_ref(connection_id=None, statuscode=1)]
+    def test_unbound_fails(self, fake_token):
+        payload = mb.component_change_set()
+        payload["connectionReferenceChanges"][1]["connectionReference"]["connectionId"] = None
+        _register_components(mb.MOCK_GOOD_BOT_ID, payload)
+        runner = _Runner(
+            config={"agent": {"botId": mb.MOCK_GOOD_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
         )
-        runner = _Runner(env_url=fake_dataverse_url, dv_token=fake_token)
         r = _by_id(wx.run_workday_extension_checks(runner))["DV-CONN-001"]
 
         assert r.status == Status.FAILED.value
         assert "unbound" in r.result
         assert "connectionid=null" in r.result
-        assert "bind the Dataverse connection reference" in r.remediation
+        assert "bind the Workday connection reference" in r.remediation
 
     @responses.activate
-    def test_inactive_statuscode_fails(self, fake_dataverse_url, fake_token):
-        _register_refs(
-            fake_dataverse_url,
-            [_dv_ref(connection_id="dv-conn-inactive", statuscode=2)],
+    def test_inactive_statuscode_fails(self, fake_token):
+        payload = mb.component_change_set()
+        payload["connectionReferenceChanges"][1]["connectionReference"]["statuscode"] = 2
+        _register_components(mb.MOCK_GOOD_BOT_ID, payload)
+        runner = _Runner(
+            config={"agent": {"botId": mb.MOCK_GOOD_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
         )
-        runner = _Runner(env_url=fake_dataverse_url, dv_token=fake_token)
         r = _by_id(wx.run_workday_extension_checks(runner))["DV-CONN-001"]
 
         assert r.status == Status.FAILED.value
@@ -279,32 +275,28 @@ class TestDataverseConnection:
         assert "Re-authenticate or re-bind" in r.remediation
 
     @responses.activate
-    def test_missing_ref_not_configured(self, fake_dataverse_url, fake_token):
-        # Only a Workday ref present — no Dataverse (92b66) ref.
-        _register_refs(
-            fake_dataverse_url,
-            [
-                dv.connection_ref(
-                    logical_name="new_sharedworkdaysoap_ff0df",
-                    display_name="OAuthUser",
-                    connector_id=dv.WORKDAY_SOAP_CONNECTOR_ID,
-                    connection_id="wd-conn-1",
-                )
-            ],
+    def test_missing_workday_ref_not_configured(self, fake_token):
+        _register_components(
+            mb.MOCK_BAD_BOT_ID,
+            mb.component_change_set_missing_workday(),
         )
-        runner = _Runner(env_url=fake_dataverse_url, dv_token=fake_token)
+        runner = _Runner(
+            config={"agent": {"botId": mb.MOCK_BAD_BOT_ID}},
+            minimalbots=_minimalbots_client(fake_token),
+        )
         r = _by_id(wx.run_workday_extension_checks(runner))["DV-CONN-001"]
 
-        assert r.status == Status.NOT_CONFIGURED.value
-        assert "was not found in this environment" in r.result
+        assert r.status == Status.FAILED.value
+        assert "Workday SOAP connection reference" in r.result
+        assert "minimalBots components payload" in r.result
         assert "Install/repair the Workday extension pack" in r.remediation
 
-    def test_no_dv_token_skips(self):
-        runner = _Runner(env_url="https://x.crm.dynamics.com", dv_token="")
+    def test_no_minimalbots_client_skips(self):
+        runner = _Runner(config={"agent": {"botId": mb.MOCK_GOOD_BOT_ID}})
         r = _by_id(wx.run_workday_extension_checks(runner))["DV-CONN-001"]
 
         assert r.status == Status.SKIPPED.value
-        assert "Dataverse token not available" in r.result
+        assert "minimalBots client" in r.result
 
 
 # ─────────────────────────────────────────────────────────────────────

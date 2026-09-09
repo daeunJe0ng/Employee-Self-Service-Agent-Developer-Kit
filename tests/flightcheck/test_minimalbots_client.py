@@ -3,8 +3,8 @@
 
 """Unit tests for the Copilot Studio minimalBots PPAPI client.
 
-These are documented-tier tests. They assert request construction and parsing
-against the internal OpenAPI contract, not a live captured cassette.
+These are validated-tier tests. They assert request construction and parsing
+against the captured minimalBots components cassette shape.
 """
 
 from __future__ import annotations
@@ -66,7 +66,14 @@ def test_get_components_posts_to_per_environment_host(minimalbots_client) -> Non
 
     data = minimalbots_client.get_components(mb.MOCK_BOT_ID)
 
-    assert data["connectionReferenceChanges"][0]["logicalName"] == "shared_workdaysoap_ff0df"
+    assert len(data["connectionReferenceChanges"]) == 2
+    assert len(data["botComponentChanges"]) == 79
+    assert (
+        data["connectionReferenceChanges"][1]["connectionReference"][
+            "connectionReferenceLogicalName"
+        ]
+        == "gptagent_esshr_cosmosda_dual2.shared_workdaysoap.workday"
+    )
     assert data["botComponentChanges"][0]["schemaName"] == "cr123_topic"
     request = responses.calls[0].request
     assert request.method == "POST"
@@ -76,7 +83,7 @@ def test_get_components_posts_to_per_environment_host(minimalbots_client) -> Non
 
 
 @responses.activate
-def test_get_connection_references_returns_documented_list(minimalbots_client) -> None:
+def test_get_connection_references_returns_validated_list(minimalbots_client) -> None:
     responses.add(
         responses.POST,
         f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/api/{mb.MOCK_BOT_ID}/components",

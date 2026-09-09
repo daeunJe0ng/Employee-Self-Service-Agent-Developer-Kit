@@ -17,6 +17,7 @@ from ._maker_urls import (
     maker_solution_url,
     maker_solutions_url,
 )
+from ._minimalbots_connection_refs import read_minimalbots_connection_references
 from .connections import get_connection_status
 from .licensing import (
     _CAPACITY_DOC,
@@ -505,13 +506,13 @@ def _check_connections_and_refs(runner) -> list[CheckResult]:
         ))
         return results
 
-    if not env_url or not dv_token:
+    if not getattr(runner, "minimalbots", None):
         results.append(CheckResult(roles=[Role.POWER_PLATFORM_ADMIN.value],
             checkpoint_id="ENV-004", category="Environment",
             priority=Priority.HIGH.value, status=Status.SKIPPED.value,
             description="Connections & connection references",
-            result="Dataverse token not available — cannot query connection references",
-            remediation="Ensure Dataverse authentication is configured.",
+            result="minimalBots client not available — cannot query connection references",
+            remediation="Ensure Copilot Studio minimalBots authentication is configured.",
         ))
         return results
 
@@ -536,27 +537,31 @@ def _check_connections_and_refs(runner) -> list[CheckResult]:
         ))
         return results
 
-    # --- Fetch connection references from Dataverse ---
-    #
-    # `connectionreference` carries no solution column — solution
-    # membership is only exposed via the `solutioncomponent` intersect.
-    # The deep-link resolution (`_resolve_ref_solutions`) does the
-    # extra round-trip downstream, only for the broken refs we need
-    # to remediate, not for every ref in the env.
+    # --- Fetch connection references from minimalBots components ---
     try:
-        conn_refs = query_all(
-            env_url, dv_token,
-            "connectionreferences",
-            "connectionreferenceid,connectionreferencelogicalname,"
-            "connectorid,connectionid,connectionreferencedisplayname,statuscode",
-        )
+        conn_refs = read_minimalbots_connection_references(runner)
     except Exception as e:
         results.append(CheckResult(roles=[Role.POWER_PLATFORM_ADMIN.value],
             checkpoint_id="ENV-004", category="Environment",
             priority=Priority.HIGH.value, status=Status.WARNING.value,
             description="Connections & connection references",
             result=f"Error querying connection references: {e}",
-            remediation="Ensure Dataverse access permissions.",
+            remediation="Ensure Copilot Studio minimalBots access permissions.",
+        ))
+        return results
+    if conn_refs is None:
+        results.append(CheckResult(roles=[Role.POWER_PLATFORM_ADMIN.value],
+            checkpoint_id="ENV-004", category="Environment",
+            priority=Priority.HIGH.value, status=Status.SKIPPED.value,
+            description="Connections & connection references",
+            result=(
+                "No configured agent botId or minimalBots connection-reference "
+                "data was available, so connection references were not judged."
+            ),
+            remediation=(
+                "Ensure .local/config.json carries the agent's botId and that "
+                "FlightCheck is signed in to Copilot Studio minimalBots, then re-run."
+            ),
         ))
         return results
 
@@ -722,9 +727,13 @@ def _check_connections_and_refs(runner) -> list[CheckResult]:
     # field, missing solution) cleanly falls back to the env-wide
     # solutions list URL so the remediation never silently 404s.
     problematic_refs = orphan_refs + unbound_refs
-    solution_info = _resolve_ref_solutions(
-        env_url=env_url, dv_token=dv_token,
-        env_id=env_id, refs=problematic_refs,
+    solution_info = (
+        _resolve_ref_solutions(
+            env_url=env_url, dv_token=dv_token,
+            env_id=env_id, refs=problematic_refs,
+        )
+        if env_url and dv_token
+        else {}
     )
 
     if has_failing_refs:

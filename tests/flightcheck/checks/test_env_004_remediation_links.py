@@ -24,6 +24,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import responses
+
+from tests.conftest import require_validated_mock
+from tests.mocks import minimalbots as mb
+
+require_validated_mock(mb)
 
 
 @pytest.fixture(autouse=True)
@@ -77,6 +83,8 @@ def _make_runner(connections):
         env_id="env-deeplinks",
         env_url="https://example.crm.dynamics.com",
         dv_token="fake-token",
+        config={"agent": {"botId": mb.MOCK_GOOD_BOT_ID}},
+        minimalbots=SimpleNamespace(),
     )
 
 
@@ -154,6 +162,14 @@ def _patch_query_all(monkeypatch, env_mod, *, conn_refs, solutions=None):
         return []
 
     monkeypatch.setattr(env_mod, "query_all", _fake)
+    monkeypatch.setattr(
+        env_mod,
+        "read_minimalbots_connection_references",
+        lambda runner: [
+            {k: v for k, v in r.items() if not k.startswith("_test_")}
+            for r in conn_refs
+        ],
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -200,6 +216,13 @@ def _scope_to_all_present_refs(monkeypatch):
             connectors=frozenset(connectors),
         )
 
+    monkeypatch.setattr(
+        env_mod,
+        "read_minimalbots_connection_references",
+        lambda runner: env_mod.query_all(
+            runner.env_url, runner.dv_token, "connectionreferences", "sel"
+        ),
+    )
     monkeypatch.setattr(env_mod, "build_agent_ref_scope", _all_present)
 
 
@@ -235,6 +258,101 @@ def _conn_c(name, connector, display_name="Display Name"):
             "apiId": f"/providers/Microsoft.PowerApps/apis/{connector}",
         },
     }
+
+
+def _minimalbots_client(fake_token: str):
+    from flightcheck.minimalbots_client import MinimalBotsClient
+
+    client = MinimalBotsClient(
+        tenant_id="00000000-0000-0000-0000-000000001111",
+        environment_id=mb.MOCK_ENV_ID_TEST_SUFFIX_0,
+        ring="test",
+    )
+    client._token = fake_token
+    return client
+
+
+def _register_components(bot_id: str, payload: dict):
+    responses.add(
+        method="POST",
+        url=f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/api/{bot_id}/components",
+        json=payload,
+        status=200,
+        match=[responses.matchers.query_param_matcher({"api-version": "2024-10-01"})],
+    )
+
+
+def _minimalbots_runner(bot_id: str, fake_token: str, connections: list[dict]):
+    runner = _make_runner(connections)
+    runner.config = {"agent": {"botId": bot_id}}
+    runner.minimalbots = _minimalbots_client(fake_token)
+    return runner
+
+
+def _workday_scope():
+    return _scope(
+        logical_names=(
+            "gptagent_esshr_cosmosda_dual2.shared_workdaysoap.workday",
+        ),
+        connectors=("shared_workdaysoap",),
+    )
+
+
+@responses.activate
+def test_env_004_good_minimalbots_connection_refs_pass(monkeypatch):
+    from flightcheck.checks import environment as env_mod
+    from flightcheck.checks import _minimalbots_connection_refs as refs_mod
+
+    _register_components(mb.MOCK_GOOD_BOT_ID, mb.component_change_set())
+    runner = _minimalbots_runner(
+        mb.MOCK_GOOD_BOT_ID,
+        "fake-token",
+        [_conn_c("00000000000000000000000000000000", "shared_workdaysoap")],
+    )
+    monkeypatch.setattr(env_mod, "build_agent_ref_scope", lambda runner: _workday_scope())
+    monkeypatch.setattr(
+        env_mod,
+        "read_minimalbots_connection_references",
+        refs_mod.read_minimalbots_connection_references,
+    )
+
+    summary = next(
+        r for r in env_mod._check_connections_and_refs(runner)
+        if r.checkpoint_id == "ENV-004"
+    )
+
+    assert summary.status == "Passed"
+    assert "1 reference(s) used by this agent" in summary.result
+
+
+@responses.activate
+def test_env_004_bad_minimalbots_missing_workday_ref_fails(monkeypatch):
+    from flightcheck.checks import environment as env_mod
+    from flightcheck.checks import _minimalbots_connection_refs as refs_mod
+
+    _register_components(
+        mb.MOCK_BAD_BOT_ID,
+        mb.component_change_set_missing_workday(),
+    )
+    runner = _minimalbots_runner(
+        mb.MOCK_BAD_BOT_ID,
+        "fake-token",
+        [_conn_c("00000000000000000000000000000000", "shared_workdaysoap")],
+    )
+    monkeypatch.setattr(env_mod, "build_agent_ref_scope", lambda runner: _workday_scope())
+    monkeypatch.setattr(
+        env_mod,
+        "read_minimalbots_connection_references",
+        refs_mod.read_minimalbots_connection_references,
+    )
+
+    results = env_mod._check_connections_and_refs(runner)
+
+    summary = next(r for r in results if r.checkpoint_id == "ENV-004")
+    missing = [r for r in results if r.checkpoint_id.startswith("ENV-004-MR-")]
+    assert summary.status == "Failed"
+    assert missing
+    assert "shared_workdaysoap.workday" in missing[0].result
 
 
 def test_env_004_skips_when_agent_scope_unresolvable(monkeypatch):
