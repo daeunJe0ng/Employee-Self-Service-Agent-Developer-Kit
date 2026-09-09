@@ -18,7 +18,7 @@ family) it records:
 * the **owning category function** (the same callable ``cli.py`` registers
   for ``--scope`` runs),
 * the **clients** that function needs to evaluate this checkpoint
-  (``graph`` / ``dataverse`` / ``pp_admin`` / ``pva``),
+  (``graph`` / ``dataverse`` / ``pp_admin`` / ``pva`` / ``minimalbots``),
 * whether it needs ``.local/config.json`` and a ``dataverseEndpoint``,
 * the **prerequisite checkpoint IDs** whose category functions must run
   first to hydrate shared state.
@@ -66,7 +66,10 @@ PVA = "pva"
 # BAP admin client (PP_ADMIN). Used to read per-environment Copilot Studio
 # message-capacity allocation (ENV-CAPACITY-001).
 POWERPLATFORM = "powerplatform"
-ALL_CLIENTS = frozenset({GRAPH, DATAVERSE, PP_ADMIN, PVA, POWERPLATFORM})
+# Per-environment Copilot Studio minimalBots PPAPI client. Used by future
+# DA re-point checks to read component diffs and ALM export/config state.
+MINIMALBOTS = "minimalbots"
+ALL_CLIENTS = frozenset({GRAPH, DATAVERSE, PP_ADMIN, PVA, POWERPLATFORM, MINIMALBOTS})
 
 
 # Canonical category execution order, mirroring cli.py's FULL_SCOPE. When a

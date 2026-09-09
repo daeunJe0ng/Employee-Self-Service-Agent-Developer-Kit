@@ -51,6 +51,7 @@ from flightcheck.graph_client import GraphClient
 from flightcheck.pp_admin_client import PPAdminClient, derive_environment_id
 from flightcheck.pva_client import PVAClient
 from flightcheck.powerplatform_client import PowerPlatformClient
+from flightcheck.minimalbots_client import MinimalBotsClient
 from flightcheck.azure_arm_client import AzureArmClient
 
 # Check modules
@@ -673,13 +674,21 @@ def _run_single_checkpoint(args):
     pp_admin = None
     pva = None
     powerplatform = None
+    minimalbots = None
 
     # Tenant discovery feeds Graph / Power Platform / PVA auth. Normally read
     # from the Dataverse environment's auth challenge; when this checkpoint
     # needs no Dataverse endpoint (Entra-only), fall back to the multi-tenant
     # "organizations" authority so interactive sign-in resolves the operator's
     # home tenant.
-    if needed & {registry.GRAPH, registry.PP_ADMIN, registry.PVA, registry.DATAVERSE, registry.POWERPLATFORM}:
+    if needed & {
+        registry.GRAPH,
+        registry.PP_ADMIN,
+        registry.PVA,
+        registry.DATAVERSE,
+        registry.POWERPLATFORM,
+        registry.MINIMALBOTS,
+    }:
         from auth import discover_tenant
         if env_url:
             try:
@@ -747,6 +756,16 @@ def _run_single_checkpoint(args):
             print(f"  Power Platform API: WARNING — {e}")
             powerplatform = None
 
+    if registry.MINIMALBOTS in needed and env_id:
+        print("Authenticating to Copilot Studio minimalBots PPAPI...")
+        minimalbots = MinimalBotsClient(tenant_id, env_id)
+        try:
+            minimalbots.authenticate()
+            print("  Copilot Studio minimalBots PPAPI: OK")
+        except Exception as e:
+            print(f"  Copilot Studio minimalBots PPAPI: WARNING — {e}")
+            minimalbots = None
+
     # --- Build runner with the target filter (hydrate-then-filter) ---
     runner = FlightCheckRunner(
         scope=f"checkpoint:{target}",
@@ -760,6 +779,7 @@ def _run_single_checkpoint(args):
     runner.pp_admin = pp_admin
     runner.pva = pva
     runner.powerplatform = powerplatform
+    runner.minimalbots = minimalbots
     runner.azure_arm = None
 
     # No runtime-reachability consent here: INFRA-003 is not individually
@@ -1034,6 +1054,7 @@ def main():
     print("=" * 64)
     print()
 
+    minimalbots = None
     if infra_only_scope:
         # Infrastructure scope skips auth to stay fast and read-only. The one
         # exception is the INFRA-003 egress probe: when explicitly opted in with
@@ -1182,6 +1203,19 @@ def main():
     else:
         print("Skipping Copilot Studio auth (not required for this scope).")
 
+    if args.scope in ("full", "local", "graphconnector") and env_id:
+        print("Authenticating to Copilot Studio minimalBots PPAPI...")
+        minimalbots = MinimalBotsClient(tenant_id, env_id)
+        try:
+            minimalbots.authenticate()
+            print("  Copilot Studio minimalBots PPAPI: OK")
+        except Exception as e:
+            print(f"  Copilot Studio minimalBots PPAPI: WARNING — {e}")
+            print("  (DA re-point minimalBots checks will be skipped)")
+            minimalbots = None
+    elif args.scope in ("full", "local", "graphconnector"):
+        print("Skipping Copilot Studio minimalBots PPAPI auth (no environment ID).")
+
     # Gate the PayG billing clients (PRE-005) on scope. Only the
     # prerequisites checks read them, and each is a separate interactive
     # sign-in (Power Platform API + Azure ARM are distinct audiences), so
@@ -1219,6 +1253,7 @@ def main():
     runner.pp_admin = pp_admin
     runner.pva = pva
     runner.powerplatform = powerplatform
+    runner.minimalbots = minimalbots
     runner.azure_arm = azure_arm
 
     # --- Target selection (standalone scope runs only) ---
