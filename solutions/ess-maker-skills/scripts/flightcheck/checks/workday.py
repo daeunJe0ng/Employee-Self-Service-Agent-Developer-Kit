@@ -429,141 +429,182 @@ def _extract_supported_reference_keys(topic_data: str) -> set[str]:
     return set(_WD_REF_SUPPORTED_RE.findall(topic_data))
 
 
-def _check_workday_reference_data(runner) -> list[CheckResult]:
-    """WD-REF-001 — verify every reference picklist a Workday topic requests is
-    supported by the shared GetReferenceData topic.
+_WD_REF_SYSTEM_TOPICS = {
+    "WorkdaySystemGetReferenceData",
+    "WorkdaySystemRefreshReferenceData",
+}
 
-    Pure Dataverse reconciliation (``documented`` tier — no external API):
-      * read all topic ``botcomponents`` -> per topic, the reference keys it
-        REQUESTS from GetReferenceData, plus GetReferenceData's SUPPORTED keys;
-      * FAIL on any requested key not supported (or GetReferenceData missing).
+
+def _active_agent_bot_id(runner) -> str:
+    """Resolve the configured agent bot ID from the runner config."""
+    config = getattr(runner, "config", {}) or {}
+    active_slug = config.get("activeAgent") or (config.get("agent") or {}).get("slug")
+    agents = config.get("agents") or []
+    if active_slug:
+        for agent in agents:
+            if (agent or {}).get("slug") == active_slug and (agent or {}).get("botId"):
+                return str(agent["botId"])
+    for agent in agents:
+        if (agent or {}).get("botId"):
+            return str(agent["botId"])
+    return str((config.get("agent") or {}).get("botId") or "")
+
+
+def _component_schema_name(change: dict) -> str:
+    """Extract schemaName from the validated minimalBots component envelope."""
+    if not isinstance(change, dict):
+        return ""
+    component = change.get("component")
+    if isinstance(component, dict) and component.get("schemaName"):
+        return str(component["schemaName"])
+    return str(change.get("schemaName") or "")
+
+
+def _minimalbots_component_schema_names(runner) -> tuple[set[str] | None, str]:
+    """Return schema names from minimalBots botComponentChanges.
+
+    The validated PPAPI cassette wraps each component as
+    ``{"$kind": "BotComponentInsert", "component": {"schemaName": ...}}``.
     """
+    client = getattr(runner, "minimalbots", None)
+    if client is None:
+        return (None, "no_client")
+    bot_id = _active_agent_bot_id(runner)
+    if not bot_id:
+        return (None, "no_bot_id")
+    try:
+        payload = client.get_components(bot_id)
+    except Exception as exc:  # noqa: BLE001 — surface API errors as SKIP
+        return (None, f"query_error: {exc}")
+    if not isinstance(payload, dict):
+        return (None, "query_error: minimalBots returned a non-object payload")
+    if payload.get("_error"):
+        return (None, f"query_error: {payload.get('_error')}")
+    schema_names = {
+        name for name in (
+            _component_schema_name(change)
+            for change in (payload.get("botComponentChanges") or [])
+        ) if name
+    }
+    return (schema_names, "ok")
+
+
+def _schema_leaf(schema_name: str) -> str:
+    return schema_name.rsplit(".", 1)[-1]
+
+
+def _workday_topic_schema_names(schema_names: set[str]) -> list[str]:
+    return sorted(
+        name for name in schema_names
+        if ".topic.Workday" in name
+    )
+
+
+def _workday_lookup_table_schema_names(schema_names: set[str]) -> list[str]:
+    return sorted(
+        name for name in schema_names
+        if ".variable." in name and _schema_leaf(name).endswith("LookupTable")
+    )
+
+
+def _missing_minimalbots_schema_source_result(
+    *,
+    checkpoint_id: str,
+    category: str,
+    description: str,
+    status_code: str,
+    doc_link: str,
+    roles: list[str],
+) -> CheckResult:
+    if status_code == "no_client":
+        result = "minimalBots PPAPI client not available — cannot read botComponentChanges."
+        remediation = "Re-run /flightcheck with minimalBots PPAPI access enabled."
+    elif status_code == "no_bot_id":
+        result = "No configured agent botId found — cannot read minimalBots botComponentChanges."
+        remediation = "Run /setup so .local/config.json records the active agent botId, then re-run FlightCheck."
+    else:
+        result = f"Unable to read minimalBots botComponentChanges: {status_code.removeprefix('query_error: ')}."
+        remediation = "Retry with minimalBots PPAPI access, or review the agent's components manually in Copilot Studio."
+    return CheckResult(
+        checkpoint_id=checkpoint_id,
+        category=category,
+        priority=Priority.HIGH.value,
+        status=Status.SKIPPED.value,
+        description=description,
+        result=result,
+        remediation=remediation,
+        doc_link=doc_link,
+        roles=roles,
+    )
+
+
+def _check_workday_reference_data(runner) -> list[CheckResult]:
+    """WD-REF-001 — verify Workday reference-data components exist in DA."""
     roles = [Role.ESS_MAKER.value, Role.WORKDAY_ADMIN.value]
     cid = "WD-REF-001"
     cat = "Workday"
     doc = f"{DOC_BASE}/workday"
-    env_url = getattr(runner, "env_url", None)
-    dv_token = getattr(runner, "dv_token", None)
 
-    if not env_url or not dv_token:
-        return [CheckResult(
-            checkpoint_id=cid, category=cat, priority=Priority.HIGH.value,
-            status=Status.SKIPPED.value,
-            description="Workday write-scenario reference-data availability",
-            result="Dataverse token not available — cannot read topic configuration.",
-            remediation="Re-run /flightcheck with Dataverse access.",
+    description = "Workday write-scenario reference-data availability"
+    schema_names, status_code = _minimalbots_component_schema_names(runner)
+    if schema_names is None:
+        return [_missing_minimalbots_schema_source_result(
+            checkpoint_id=cid,
+            category=cat,
+            description=description,
+            status_code=status_code,
+            doc_link=doc,
             roles=roles,
         )]
 
-    try:
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-        from auth import query_all
-        topics = query_all(
-            env_url, dv_token,
-            "botcomponents",
-            "name,schemaname,data",
-            filter_expr="componenttype eq 9",
-        )
-    except Exception as exc:  # noqa: BLE001 — surface verbatim
-        return [CheckResult(
-            checkpoint_id=cid, category=cat, priority=Priority.HIGH.value,
-            status=Status.SKIPPED.value,
-            description="Workday write-scenario reference-data availability",
-            result=f"Unable to read Dataverse topic configuration: {exc}.",
-            remediation="Retry with Dataverse access, or review the topics manually in the maker portal.",
-            roles=roles,
-        )]
+    lookup_tables = _workday_lookup_table_schema_names(schema_names)
+    ref_topics = sorted(
+        name for name in schema_names
+        if _schema_leaf(name) in _WD_REF_SYSTEM_TOPICS
+    )
+    present_ref_topic_names = {_schema_leaf(name) for name in ref_topics}
+    missing_ref_topics = sorted(_WD_REF_SYSTEM_TOPICS - present_ref_topic_names)
 
-    supported: set[str] = set()
-    getref_installed = False
-    requested_by_topic: dict[str, set[str]] = {}
-    for t in topics or []:
-        schema = t.get("schemaname") or ""
-        data = t.get("data") or ""
-        if "GetReferenceData" in schema:
-            getref_installed = True
-            supported |= _extract_supported_reference_keys(data)
-            continue
-        keys = _extract_requested_reference_keys(data)
-        if keys:
-            requested_by_topic[t.get("name") or schema or "(unnamed topic)"] = keys
-
-    if not requested_by_topic:
-        return [CheckResult(
-            checkpoint_id=cid, category=cat, priority=Priority.MEDIUM.value,
-            status=Status.NOT_CONFIGURED.value,
-            description="Workday write-scenario reference-data availability",
-            result="No Workday topic requests a reference-data picklist — nothing to validate.",
-            remediation="",
-            doc_link=doc, roles=roles,
-        )]
-
-    all_requested = sorted({k for ks in requested_by_topic.values() for k in ks})
-    studio = _wd_studio_link(runner)
-
-    if not getref_installed:
-        return [CheckResult(
-            checkpoint_id=cid, category=cat, priority=Priority.HIGH.value,
-            status=Status.FAILED.value,
-            description="Workday write-scenario reference-data availability",
-            result=(
-                f"{len(requested_by_topic)} Workday topic(s) request reference-data picklists "
-                f"({', '.join(_ref_key_label(k) for k in all_requested)}), but the shared "
-                f"'GetReferenceData' topic is not installed — none of these picklists can be "
-                f"populated, so the agent cannot validate user input for these fields."
-            ),
-            remediation=(
-                "Install/repair the Workday extension so the 'GetReferenceData' system topic and "
-                "the msdyn_HRWorkdayHCMEmployeeGetReferenceData read scenario are present (they load "
-                "the reference picklists at runtime via a Workday report). "
-                f"Open {studio} \u2192 Topics to review the agent's Workday topics. See the Workday "
-                "topics + report-template configuration docs."
-            ),
-            doc_link=doc, roles=roles,
-        )]
-
-    gaps: dict[str, set[str]] = {}
-    for name, keys in requested_by_topic.items():
-        missing = keys - supported
-        if missing:
-            gaps[name] = missing
-
-    if not gaps:
+    if lookup_tables and not missing_ref_topics:
         return [CheckResult(
             checkpoint_id=cid, category=cat, priority=Priority.HIGH.value,
             status=Status.PASSED.value,
-            description="Workday write-scenario reference-data availability",
+            description=description,
             result=(
-                f"All {len(requested_by_topic)} Workday topic(s) that request reference-data "
-                f"picklists request only keys GetReferenceData supports "
-                f"({len(supported)} reference key(s) supported)."
+                f"minimalBots botComponentChanges contains {len(lookup_tables)} "
+                "Workday LookupTable variable component(s) and both reference-data "
+                "system topics: "
+                + ", ".join(_schema_leaf(name) for name in lookup_tables + ref_topics)
+                + "."
             ),
             remediation="",
-            doc_link=doc, roles=roles,
+            doc_link=doc,
+            roles=roles,
         )]
 
-    lines = [
-        f"'{name}': requests unsupported reference set(s) "
-        + ", ".join(f"{_ref_key_label(k)} [{k}]" for k in sorted(missing))
-        for name, missing in sorted(gaps.items())
-    ]
+    studio = _wd_studio_link(runner)
+    gaps = []
+    if not lookup_tables:
+        gaps.append("no .variable.*LookupTable component schemaNames")
+    if missing_ref_topics:
+        gaps.append(
+            "missing reference-data topic component schemaName(s): "
+            + ", ".join(missing_ref_topics)
+        )
     return [CheckResult(
         checkpoint_id=cid, category=cat, priority=Priority.HIGH.value,
         status=Status.FAILED.value,
-        description="Workday write-scenario reference-data availability",
+        description=description,
         result=(
-            f"{len(gaps)} of {len(requested_by_topic)} Workday topic(s) request a reference-data "
-            f"picklist that GetReferenceData does not support, so that picklist cannot populate — "
-            f"the agent will reject valid inputs, accept invalid ones (downstream SOAP fault), or "
-            f"hallucinate allowed values:\n" + "\n".join(lines)
+            "minimalBots botComponentChanges does not contain the Workday "
+            "reference-data inventory expected for Declarative Agent agents: "
+            + "; ".join(gaps)
+            + "."
         ),
         remediation=(
-            f"Open {studio} \u2192 Topics to fix the topic(s) above: either point each at a "
-            "reference key GetReferenceData supports, OR add the missing key to the "
-            "'GetReferenceData' topic and bind it to the Workday report that returns those "
-            "reference IDs (e.g. Get_Reference_IDs / Get_Countries). Until then the field has no "
-            "validated allowed-value list. See the Workday report-template + prompts-support "
-            "configuration docs."
+            f"Open {studio} and repair or re-import the Workday Declarative Agent "
+            "components so the LookupTable variables and WorkdaySystemGetReferenceData / "
+            "WorkdaySystemRefreshReferenceData topics are present."
         ),
         doc_link=doc, roles=roles,
     )]
@@ -576,26 +617,16 @@ def run_workday_checks(runner) -> list[CheckResult]:
     check: it runs whenever Dataverse credentials are available,
     independent of flow detection, because the connection references
     themselves are the install signal (refs may be installed before
-    flows are deployed). The remaining workday checks are still gated
-    on `_workday_flows` because they validate flow-deployed Workday
-    configuration; if the customer has refs but no deployed flows, the
-    package-detection result text flags that contradiction for the
-    operator.
+    flows are deployed). Most remaining checks are still gated on
+    `_workday_flows` because they validate flow-deployed Workday configuration. The Declarative
+    Agent component inventory checks (WD-REF-001 and WD-WF-CAT-001) run
+    before that flow gate because DA agents expose Workday topics and
+    variables through minimalBots botComponentChanges, not cloud flows.
 
     WD-CONN-012 (package connection-reference binding completeness)
     runs at the end of the workday block when WD-PKG-001 detected a
     known flavor, so its diagnostic can list which Microsoft-shipped
     refs are bound vs. unbound for the detected flavor.
-
-    WD-WF-CAT-001 (custom-workflow inventory checklist) runs after the
-    SOAP tests. It walks `workspace/agents/*/topics/*.mcs.yml` for
-    Workday scenario references that are NOT in the live OOTB catalog
-    resolved from the customer's Dataverse
-    (`msdyn_employeeselfservicetemplateconfigs` where `ismanaged=true`)
-    and surfaces them as a MANUAL row with a 4-item operator checklist.
-    WD-WF-CAT-LINK is the corresponding cross-link trailer emitted
-    from inside `_check_workflows` so admins reading a green 17-row
-    SOAP report don't miss the manual row.
 
     WD-CONN-102 (Workday SAML signing certificate health) runs BEFORE
     the no-Workday-integration early-return — the Entra Workday SAML
@@ -633,6 +664,12 @@ def run_workday_checks(runner) -> list[CheckResult]:
     # tenant we want to surface the manual verification step even
     # when the kit-side Workday install isn't deployed yet.
     results.extend(_check_entra_workday_federation_alignment(runner))
+
+    # WD-REF-001 and WD-WF-CAT-001 — DA component inventory.
+    # These are intentionally flowless: Declarative Agent Workday topics and
+    # reference-data lookup tables are read from minimalBots botComponentChanges.
+    results.extend(_check_workday_reference_data(runner))
+    results.extend(_check_custom_workflow_inventory(runner))
 
     # If neither flows nor any Workday connection references are
     # present, this tenant has no Workday integration. Skip the
@@ -680,12 +717,6 @@ def run_workday_checks(runner) -> list[CheckResult]:
     # --- SOAP Workflow Tests (only if Workday MCP creds available) ---
     results.extend(_check_workflows(runner))
 
-    # WD-REF-001 — write-scenario reference-data availability. Reconciles the
-    # reference picklists each installed Workday write scenario consumes against
-    # the shared GetReferenceData topic's supported keys (Dataverse-only; no
-    # external API). Config-level, so it runs regardless of SOAP credentials.
-    results.extend(_check_workday_reference_data(runner))
-
     # WD-SEC-003 — Personal Data domain write-permission probe.
     # Runs right after _check_workflows so it can reuse the same
     # ISU credentials the operator just supplied (no second prompt)
@@ -696,16 +727,6 @@ def run_workday_checks(runner) -> list[CheckResult]:
     # the operator sees binding diagnostics in context with the other
     # connection checks above.
     results.extend(_check_package_connection_completeness(runner))
-
-    # WD-WF-CAT-001 — Workday custom-workflow inventory checklist.
-    # Runs after the SOAP tests so the WD-WF-CAT-LINK trailer that
-    # `_check_workflows` emits inside its own returns has already
-    # populated `runner._workday_unknown_scenarios` (the trailer
-    # triggers the lazy discovery walk via _get_unknown_workday_scenarios).
-    # Emitting WD-WF-CAT-001 here ensures the full manual checklist
-    # appears in the per-Workday-block output even if there were no
-    # SOAP tests run (e.g. credentials unavailable).
-    results.extend(_check_custom_workflow_inventory(runner))
 
     return _suppress_manual_conn_sec_when_runs_healthy(results, runner)
 
@@ -4348,54 +4369,14 @@ def _check_personal_data_write_permission(runner) -> list[CheckResult]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# WD-WF-CAT-001 — Workday custom-workflow inventory checklist (MANUAL)
+# WD-WF-CAT-001 — Workday topic component inventory
 # ─────────────────────────────────────────────────────────────────────────
 #
-# The kit hard-codes a 17-workflow SOAP-test catalog (`WORKFLOWS`
-# above). Customers wire up additional Workday scenarios two ways:
-#
-#   1. Template-config + topic — a topic calls
-#      `dialog: msdyn_copilotforemployeeselfservicehr.topic.WorkdaySystemGetCommonExecution`
-#      with a `scenarioName: msdyn_...` value. The shared flow reads
-#      the matching template config row from Dataverse by ScenarioName
-#      and executes the SOAP request.
-#   2. Standalone topic + cloud flow — `kind: InvokeFlowAction`
-#      pointing at a Power Automate flow bound to `shared_workdaysoap`.
-#
-# Both paths exit FlightCheck's automated validation surface. The
-# kit cannot:
-#   * Parse tenant-specific Workday WSDL to validate payload shape.
-#   * Read template config XML field-by-field against the WSDL.
-#   * Confirm the ISU used by the custom scenario has the right
-#     Workday security domain.
-#   * Tell whether an evaluation test exists for the custom scenario.
-#
-# Per AGENTS.md principle #2, this is the canonical MANUAL pattern:
-# the kit observes one side (topic references scenario X), the
-# operator verifies the other side (Workday-tenant configuration).
-#
-# Data sources:
-#   * Local YAML walk (`workspace/agents/*/topics/*.mcs.yml`) —
-#     no API call, no cassette required.
-#   * Live Dataverse query against
-#     `msdyn_employeeselfservicetemplateconfigs` filtered by
-#     `ismanaged=true` — the tenant-accurate OOTB scenario set.
-#   * Cached `runner._workday_package_flavor` (from WD-PKG-001) for
-#     the simplified-install gate per principle #11.
-#
-# Outputs:
-#   * One PASSED row if every discovered scenario is in the live
-#     Dataverse-resolved OOTB catalog.
-#   * One MANUAL row enumerating unknowns + the 4-item checklist
-#     (Principle #7 — bucketed, not per-resource).
-#   * One SKIPPED row on simplified install (no ISU/RaaS), missing
-#     workspace, zero Workday references, or missing Dataverse token
-#     (cannot resolve OOTB catalog → cannot make a PASS/FAIL claim
-#     per AGENTS.md principle #1).
-#   * One WARNING row if the Dataverse query errored — surfaces the
-#     error per principle #3 instead of silently passing.
-# Caches discovered + unknown lists on the runner so the WD-WF-CAT-LINK
-# trailer inside _check_workflows can reference them without re-walking.
+# Declarative Agent agents expose Workday topics through minimalBots
+# `botComponentChanges`, not through cloudFlowDefinitionChanges. The active
+# WD-WF-CAT-001 check therefore enumerates `.topic.Workday*` schemaNames.
+# The legacy local-topic/custom-scenario helpers below are kept only for the
+# older WD-WF-CAT-LINK trailer path in _check_workflows.
 
 # Marker for the shared Workday execution topic (Pattern A). The
 # `dialog:` field is fully-qualified and always contains this suffix
@@ -4761,32 +4742,10 @@ _WD_WF_CAT_CHECKLIST = (
 
 
 def _check_custom_workflow_inventory(runner) -> list[CheckResult]:
-    """WD-WF-CAT-001 — Manual checklist for custom Workday workflows.
-
-    Gates (in order):
-      * `runner._workday_package_flavor == "simplified"` → SKIPPED
-        (ISU/scenario inventory doesn't apply on the simplified
-        install per AGENTS.md principle #11).
-      * Missing `workspace/agents/` → SKIPPED.
-      * Zero Workday references discovered in any topic → SKIPPED.
-      * No Dataverse token / env URL → SKIPPED (we cannot resolve the
-        live OOTB catalog and must not return PASS per principle #1).
-      * Dataverse query errored → WARNING (surface the error per
-        principle #3 rather than silently swallowing it).
-
-    Otherwise:
-      * Every discovered scenario is a managed row in Dataverse → PASSED.
-      * Any unknown / flow-bound reference → MANUAL with bucketed
-        listing in `result` and the 4-item checklist in `remediation`.
-
-    Caches discovered list on `runner._workday_discovered_scenarios`
-    and the (possibly empty) unknown list on
-    `runner._workday_unknown_scenarios` so the WD-WF-CAT-LINK trailer
-    inside _check_workflows can read them without re-walking.
-    """
+    """WD-WF-CAT-001 — inventory Workday topic components from minimalBots."""
     cp_id = "WD-WF-CAT-001"
     category = "Workday Workflows"
-    description = "Workday custom-workflow inventory checklist"
+    description = "Workday workflow/topic component inventory"
     doc_link = f"{DOC_BASE}/workday-extensibility"
 
     flavor = getattr(runner, "_workday_package_flavor", None)
@@ -4797,137 +4756,50 @@ def _check_custom_workflow_inventory(runner) -> list[CheckResult]:
             category=category,
         )]
 
-    workspace_root = Path("workspace/agents")
-    if not workspace_root.exists():
-        return [CheckResult(roles=[Role.ESS_MAKER.value],
-            checkpoint_id=cp_id, category=category,
-            priority=Priority.HIGH.value, status=Status.SKIPPED.value,
-            description=description,
-            result="workspace/agents/ directory not found.",
-            remediation=(
-                "Run /setup to extract agent files before this check "
-                "can enumerate Workday scenario references in topics."
-            ),
-            doc_link=doc_link,
-        )]
-
-    # Discover Workday refs from topics first — no catalog needed for
-    # this step. If there are none, we can SKIP cleanly without even
-    # touching Dataverse.
-    discovered = _discover_customer_workday_scenarios(workspace_root)
-    runner._workday_discovered_scenarios = discovered
-
-    if not discovered:
+    schema_names, status_code = _minimalbots_component_schema_names(runner)
+    if schema_names is None:
         runner._workday_unknown_scenarios = []
-        return [CheckResult(roles=[Role.ESS_MAKER.value],
-            checkpoint_id=cp_id, category=category,
-            priority=Priority.HIGH.value, status=Status.SKIPPED.value,
+        return [_missing_minimalbots_schema_source_result(
+            checkpoint_id=cp_id,
+            category=category,
             description=description,
-            result=(
-                "No Workday scenario references found in any agent topic. "
-                "Either Workday is not wired into the customer's agent yet, "
-                "or its topics are not yet extracted to "
-                "workspace/agents/*/topics/."
-            ),
-            remediation=(
-                "If the customer intends to use Workday, run /create to add "
-                "a Workday scenario topic, or /setup to re-extract topics "
-                "if you expected references to be present."
-            ),
+            status_code=status_code,
             doc_link=doc_link,
+            roles=[Role.ESS_MAKER.value],
         )]
 
-    # We have Workday refs in topics — we need the live Dataverse
-    # OOTB catalog to know which are custom. No fallback: if Dataverse
-    # is unreachable, we cannot make a PASS/FAIL claim (principle #1).
-    catalog, status_code = _get_workday_ootb_catalog(runner)
+    topics = _workday_topic_schema_names(schema_names)
+    runner._workday_unknown_scenarios = []
 
-    if catalog is None and status_code == "no_token":
-        # Suppress the trailer too — without the catalog we cannot
-        # legitimately list "unknowns."
-        runner._workday_unknown_scenarios = []
-        return [CheckResult(roles=[Role.ESS_MAKER.value],
-            checkpoint_id=cp_id, category=category,
-            priority=Priority.HIGH.value, status=Status.SKIPPED.value,
-            description=description,
-            result=(
-                f"Found {len(discovered)} Workday scenario reference(s) "
-                "in customer topics, but no Dataverse credentials are "
-                "available to resolve the live OOTB scenario catalog "
-                "(msdyn_employeeselfservicetemplateconfigs where "
-                "ismanaged=true). Cannot determine which references are "
-                "custom vs. OOTB without that lookup."
-            ),
-            remediation=(
-                "Re-run flightcheck after running /setup so Dataverse "
-                "credentials are cached on the runner, or run it in an "
-                "environment where the Dataverse MCP server is "
-                "authenticated."
-            ),
-            doc_link=doc_link,
-        )]
-
-    if catalog is None:
-        # query_error: <msg> — surface verbatim per principle #3.
-        err_msg = status_code.removeprefix("query_error: ") or "unknown error"
-        runner._workday_unknown_scenarios = []
-        return [CheckResult(roles=[Role.ESS_MAKER.value],
-            checkpoint_id=cp_id, category=category,
-            priority=Priority.HIGH.value, status=Status.WARNING.value,
-            description=description,
-            result=(
-                f"Found {len(discovered)} Workday scenario reference(s) "
-                "in customer topics, but the Dataverse query for the "
-                "live OOTB scenario catalog "
-                "(msdyn_employeeselfservicetemplateconfigs where "
-                f"ismanaged=true) failed: {err_msg}. Cannot determine "
-                "which references are custom vs. OOTB until the query "
-                "succeeds."
-            ),
-            remediation=(
-                "Investigate the Dataverse error above. Common causes: "
-                "expired Dataverse token (re-run /setup), table not "
-                "present in this environment (ESS solution not "
-                "installed), or transient service outage (retry)."
-            ),
-            doc_link=doc_link,
-        )]
-
-    # Catalog resolved cleanly — compute unknowns and cache them.
-    unknown = [
-        ref for ref in discovered
-        if ref["pattern"] == "invoke-flow-action"
-        or (ref.get("scenarioName") and ref["scenarioName"] not in catalog)
-    ]
-    runner._workday_unknown_scenarios = unknown
-
-    if not unknown:
+    if topics:
         return [CheckResult(roles=[Role.ESS_MAKER.value],
             checkpoint_id=cp_id, category=category,
             priority=Priority.HIGH.value, status=Status.PASSED.value,
             description=description,
             result=(
-                f"Found {len(discovered)} Workday scenario reference(s) "
-                "in customer topics. All are managed rows in the "
-                "customer's Dataverse "
-                "(msdyn_employeeselfservicetemplateconfigs where "
-                "ismanaged=true) and require no manual review."
+                f"minimalBots botComponentChanges contains {len(topics)} "
+                "Workday topic component schemaName(s): "
+                + ", ".join(_schema_leaf(name) for name in topics)
+                + "."
             ),
+            remediation="",
             doc_link=doc_link,
         )]
 
-    body = _format_unknown_scenarios(unknown)
     return [CheckResult(roles=[Role.ESS_MAKER.value],
         checkpoint_id=cp_id, category=category,
-        priority=Priority.HIGH.value, status=Status.MANUAL.value,
+        priority=Priority.HIGH.value, status=Status.FAILED.value,
         description=description,
         result=(
-            f"Found {len(unknown)} Workday scenario reference(s) in "
-            "customer topics that the kit cannot validate end-to-end "
-            "(not in the OOTB catalog):\n\n"
-            f"{body}"
+            "minimalBots botComponentChanges contains no "
+            ".topic.Workday* component schemaNames, so the Declarative Agent "
+            "does not expose the expected Workday topic inventory."
         ),
-        remediation=_WD_WF_CAT_CHECKLIST,
+        remediation=(
+            "Repair or re-import the Workday Declarative Agent components, "
+            "then re-run FlightCheck after the agent contains the expected "
+            ".topic.Workday* components."
+        ),
         doc_link=doc_link,
     )]
 

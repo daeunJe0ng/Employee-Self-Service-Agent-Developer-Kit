@@ -67,7 +67,10 @@ def test_get_components_posts_to_per_environment_host(minimalbots_client) -> Non
     data = minimalbots_client.get_components(mb.MOCK_BOT_ID)
 
     assert data["connectionReferenceChanges"][0]["logicalName"] == "shared_workdaysoap_ff0df"
-    assert data["botComponentChanges"][0]["schemaName"] == "cr123_topic"
+    assert (
+        data["botComponentChanges"][0]["component"]["schemaName"]
+        == "gptagent_esshr_cosmosda_v2.topic.WorkdayGetVisas"
+    )
     request = responses.calls[0].request
     assert request.method == "POST"
     assert request.headers["x-ms-client-name"] == "EssAdk"

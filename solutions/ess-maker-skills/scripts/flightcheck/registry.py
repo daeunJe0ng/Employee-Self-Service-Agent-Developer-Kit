@@ -66,8 +66,8 @@ PVA = "pva"
 # BAP admin client (PP_ADMIN). Used to read per-environment Copilot Studio
 # message-capacity allocation (ENV-CAPACITY-001).
 POWERPLATFORM = "powerplatform"
-# Per-environment Copilot Studio minimalBots PPAPI client. Used by future
-# DA re-point checks to read component diffs and ALM export/config state.
+# Per-environment Copilot Studio minimalBots PPAPI client. Used by DA checks to
+# read component diffs and ALM export/config state.
 MINIMALBOTS = "minimalbots"
 ALL_CLIENTS = frozenset({GRAPH, DATAVERSE, PP_ADMIN, PVA, POWERPLATFORM, MINIMALBOTS})
 
@@ -267,6 +267,30 @@ _SPECS: list[CheckpointSpec] = [
         prereqs=("WD-PKG-001", "WD-001"),
         priority=Priority.HIGH.value,
         roles=(Role.POWER_PLATFORM_ADMIN.value,),
+    ),
+    # ---- Workday: Declarative Agent component inventory ----
+    # DA agents expose Workday topics and reference-data lookup variables
+    # through minimalBots botComponentChanges, not Dataverse botcomponents or
+    # cloudFlowDefinitionChanges.
+    CheckpointSpec(
+        key="WD-REF-001",
+        category_fn=run_workday_checks,
+        category_label="Workday",
+        clients=frozenset({MINIMALBOTS}),
+        requires_config=True,
+        requires_dataverse_endpoint=False,
+        priority=Priority.HIGH.value,
+        roles=(Role.ESS_MAKER.value, Role.WORKDAY_ADMIN.value),
+    ),
+    CheckpointSpec(
+        key="WD-WF-CAT-001",
+        category_fn=run_workday_checks,
+        category_label="Workday Workflows",
+        clients=frozenset({MINIMALBOTS}),
+        requires_config=True,
+        requires_dataverse_endpoint=False,
+        priority=Priority.HIGH.value,
+        roles=(Role.ESS_MAKER.value,),
     ),
     # ---- Workday dynamic families ----
     # WD-CONN-* — the generic connection enumerator (connections.py emits
@@ -551,6 +575,7 @@ OWNED_PREFIXES: tuple = (
     "ENV-CAPACITY",
     "ESS-SOLN",
     "WD-PKG",
+    "WD-REF",
     "WD-CONN",
     "WD-FLOW",
     "WD-WF",

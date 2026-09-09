@@ -749,9 +749,11 @@ class TestSkippedFlavorStaysNonInteractive:
         assert "WD-CONN-102" in ids
 
         # The deep Workday block must NOT run — none of the checks that need
-        # Dataverse/ISU creds. Their presence would mean the guard let a
-        # headless run reach the interactive credential prompts.
-        assert not any(i.startswith("WD-WF-") for i in ids)
+        # Dataverse/ISU creds. WD-WF-CAT-001 is allowed because it now reads
+        # minimalBots component inventory before the flow gate.
+        assert not any(
+            i.startswith("WD-WF-") and i != "WD-WF-CAT-001" for i in ids
+        )
         assert not any(i.startswith("WD-FLOW-") for i in ids)
         assert not any(i.startswith("WD-ENV-") for i in ids)
         assert "WD-SEC-003" not in ids
