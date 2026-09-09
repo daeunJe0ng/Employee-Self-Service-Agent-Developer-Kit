@@ -27,9 +27,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qsl, urlparse
 
 import pytest
 import responses
+import yaml
 from responses import matchers
 
 
@@ -93,6 +95,48 @@ def _results_by_id(runner) -> dict:
 
 def _delete_calls():
     return [c for c in responses.calls if c.request.method == "DELETE"]
+
+
+def _pub_002_row(runner) -> dict:
+    from flightcheck.checks.publishing import _build_checks
+
+    return next(row for row in _build_checks(runner) if row["id"] == "PUB-002")
+
+
+def _add_validated_publishing_cassette(*, base_url: str) -> str:
+    """Replay the redacted export-200/import-409 cassette via responses."""
+    cassette_path = (
+        Path(__file__).resolve().parents[3]
+        / "tests"
+        / "fixtures"
+        / "cassettes"
+        / "flightcheck_minimalbots_publishing.yaml"
+    )
+    data = yaml.safe_load(cassette_path.read_text(encoding="utf-8"))
+    bot_id = ""
+    for interaction in data["interactions"]:
+        request = interaction["request"]
+        response = interaction["response"]
+        parsed = urlparse(request["uri"])
+        url = f"{base_url.rstrip('/')}{parsed.path}"
+        if "/alm/" in parsed.path and "/export" in parsed.path:
+            bot_id = parsed.path.split("/alm/", 1)[1].split("/export", 1)[0]
+        headers = {
+            key: values[0] if isinstance(values, list) else values
+            for key, values in (response.get("headers") or {}).items()
+            if key.lower() not in {"content-length", "transfer-encoding"}
+        }
+        body = (response.get("body") or {}).get("string") or b""
+        responses.add(
+            request["method"],
+            url,
+            body=body,
+            status=response["status"]["code"],
+            headers=headers,
+            match=[matchers.query_param_matcher(dict(parse_qsl(parsed.query)))],
+        )
+    assert bot_id, "publishing cassette did not include an export bot id"
+    return bot_id
 
 
 # --------------------------------------------------------------- shape
@@ -246,7 +290,7 @@ def test_pub_001_export_empty_fails(minimalbots_client):
         _runner(bot_id=mb.MOCK_BOT_ID, minimalbots=minimalbots_client)
     )["PUB-001"]
 
-    assert result.status == Status.FAILED.value
+    assert result.status == Status.FAILED.value, result.result
     assert "empty package" in result.result
 
 
@@ -335,8 +379,28 @@ def test_pub_002_schema_collision_fails(minimalbots_client):
         )
     )["PUB-002"]
 
-    assert result.status == Status.FAILED.value
+    assert result.status == Status.FAILED.value, result.result
     assert "schema_collision" in result.result
+    assert not _delete_calls()
+
+
+@responses.activate
+def test_pub_002_replays_validated_export_import_schema_collision_cassette(minimalbots_client):
+    from flightcheck.checks.publishing import _check_pub_002_import_probe
+    from flightcheck.runner import Status
+
+    bot_id = _add_validated_publishing_cassette(base_url=minimalbots_client.base_url)
+    runner = _runner(
+        bot_id=bot_id,
+        minimalbots=minimalbots_client,
+        alm_import_probe=True,
+    )
+
+    result = _check_pub_002_import_probe(runner, _pub_002_row(runner))
+
+    assert result.status == Status.FAILED.value, result.result
+    assert "schema_collision" in result.result
+    assert "could not mint a new transient agent" in result.result
     assert not _delete_calls()
 
 
