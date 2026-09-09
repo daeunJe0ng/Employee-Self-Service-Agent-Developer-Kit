@@ -138,6 +138,51 @@ def test_export_returns_zip_bytes(minimalbots_client) -> None:
     assert minimalbots_client.export(mb.MOCK_BOT_ID) == zip_bytes
 
 
+@responses.activate
+def test_import_package_posts_multipart_and_returns_result(minimalbots_client) -> None:
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/alm/import",
+        json=mb.import_result(),
+        status=200,
+        match=[matchers.query_param_matcher({"api-version": "2024-10-01"})],
+    )
+
+    result = minimalbots_client.import_package(b"PK\x03\x04pkg")
+
+    assert result == mb.import_result()
+    request = responses.calls[0].request
+    assert request.method == "POST"
+    # requests must set the multipart boundary itself, not our JSON content-type
+    assert request.headers["Content-Type"].startswith("multipart/form-data; boundary=")
+
+
+@responses.activate
+def test_import_package_reports_schema_collision(minimalbots_client) -> None:
+    responses.add(
+        responses.POST,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/alm/import",
+        status=409,
+        match=[matchers.query_param_matcher({"api-version": "2024-10-01"})],
+    )
+
+    result = minimalbots_client.import_package(b"PK\x03\x04pkg")
+
+    assert result == {"_error": "schema_collision", "_status": 409}
+
+
+@responses.activate
+def test_delete_bot_returns_true_on_204(minimalbots_client) -> None:
+    responses.add(
+        responses.DELETE,
+        f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/api/{mb.MOCK_BOT_ID}",
+        status=204,
+        match=[matchers.query_param_matcher({"api-version": "2024-10-01"})],
+    )
+
+    assert minimalbots_client.delete_bot(mb.MOCK_BOT_ID) is True
+
+
 def test_unconfigured_client_fails_cleanly_without_network() -> None:
     from flightcheck.minimalbots_client import MinimalBotsClient
 
@@ -148,3 +193,5 @@ def test_unconfigured_client_fails_cleanly_without_network() -> None:
         "_error": "not_configured"
     }
     assert client.export(mb.MOCK_BOT_ID) == b""
+    assert client.import_package(b"pkg") == {"_error": "not_configured"}
+    assert client.delete_bot(mb.MOCK_BOT_ID) is False

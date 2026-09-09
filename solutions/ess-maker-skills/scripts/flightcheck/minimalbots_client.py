@@ -281,3 +281,67 @@ class MinimalBotsClient:
             return b""
         resp.raise_for_status()
         return resp.content
+
+    def _multipart_headers(self) -> dict:
+        """Auth headers for multipart uploads.
+
+        Deliberately omits Content-Type so ``requests`` sets the correct
+        ``multipart/form-data`` boundary itself; reusing the JSON header would
+        corrupt the upload.
+        """
+        base = dict(self.headers)
+        base.pop("Content-Type", None)
+        return base
+
+    def import_package(
+        self,
+        package: bytes,
+        *,
+        schema_name: str | None = None,
+        api_version: str = DEFAULT_API_VERSION,
+    ) -> dict:
+        """Import an ALM package zip as a Dev agent (mutating).
+
+        Omit ``schema_name`` to mint a brand-new agent; a schema collision is
+        rejected with HTTP 409. Returns the ``AlmImportResult``
+        (``cdsBotId`` + ``schemaName``) on success.
+        """
+        if not self.is_configured or not self.base_url:
+            return {"_error": "not_configured"}
+        files: dict = {"package": ("package.zip", package, "application/zip")}
+        if schema_name:
+            files["schemaName"] = (None, schema_name)
+        resp = _SESSION.post(
+            f"{self.base_url}/copilotstudio/minimalBots/alm/import",
+            headers=self._multipart_headers(),
+            params={"api-version": api_version},
+            files=files,
+            timeout=120,
+        )
+        if resp.status_code in (401, 403):
+            return {"_error": "insufficient_permissions", "_status": resp.status_code}
+        if resp.status_code == 409:
+            return {"_error": "schema_collision", "_status": 409}
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_bot(
+        self,
+        cds_bot_id: str,
+        *,
+        api_version: str = DEFAULT_API_VERSION,
+    ) -> bool:
+        """Delete a minimal bot by CDS bot id. Returns True on success (204).
+
+        Used to clean up agents created by :meth:`import_package` so an import
+        probe leaves no residue in the target environment.
+        """
+        if not self.is_configured or not self.base_url:
+            return False
+        resp = _SESSION.delete(
+            f"{self.base_url}/copilotstudio/minimalBots/api/{cds_bot_id}",
+            headers=self.headers,
+            params={"api-version": api_version},
+            timeout=60,
+        )
+        return resp.status_code in (200, 202, 204)

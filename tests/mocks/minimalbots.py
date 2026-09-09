@@ -80,3 +80,21 @@ def configure_response() -> dict:
         "commitSha": "abc123",
         "values": {"EnvironmentName": "ESS test"},
     }
+
+
+def import_result() -> dict:
+    """Return a documented AlmImportResult sample.
+
+    Source: ``swagger.json`` schema ``AlmImportResult``. The import endpoint
+    mints a fresh Dev agent and returns its CDS bot id and physical schema
+    name:
+
+    {
+      "cdsBotId": "11111111-2222-3333-4444-555555555555",
+      "schemaName": "cr123_essagent"
+    }
+    """
+    return {
+        "cdsBotId": MOCK_BOT_ID,
+        "schemaName": "cr123_essagent",
+    }
