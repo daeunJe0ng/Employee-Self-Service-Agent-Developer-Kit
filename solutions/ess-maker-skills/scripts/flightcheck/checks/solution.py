@@ -2,36 +2,23 @@
 # Licensed under the MIT License.
 
 """
-ESS FlightCheck — ESS Solution Installation Validation (ESS-SOLN-xxx)
+ESS FlightCheck — ESS solution package validation (ESS-SOLN-xxx)
 
-Verifies that the base ESS agent solution has been installed into the target
-Power Platform environment (skill-2 ``install-ess``). The install itself is a
-manual AppSource / admin-center action; this module supplies the *programmatic
-verification* that the solution landed, runnable in isolation via
-``--checkpoint ESS-SOLN-001``.
+Verifies that the base ESS declarative agent package is present in the target
+Power Platform environment (skill-2 ``install-ess``). The check reads the
+Copilot Studio minimalBots ALM configure surface so it works after the DA
+re-point away from Dataverse solution-table state.
 """
 
 from ..runner import CheckResult, Priority, Role, Status
-from auth import query_all, AuthExpiredError  # scripts/auth.py, on path via cli.py
-
-
-# The AppSource "Employee Self Service" offer installs a managed solution whose
-# unique name starts with this prefix. Three variants ship today — the base
-# agent plus IT and HR editions — and skill-6 references the same namespace:
-#   msdyn_copilotforemployeeselfservice     (base)
-#   msdyn_copilotforemployeeselfserviceit   (IT)
-#   msdyn_copilotforemployeeselfservicehr   (HR)
-# A ``startswith`` match accepts whichever edition the tenant deployed (and any
-# future variant) in a single round-trip.
-_ESS_SOLUTION_PREFIX = "msdyn_copilotforemployeeselfservice"
-_ESS_SOLN_FILTER = f"startswith(uniquename,'{_ESS_SOLUTION_PREFIX}')"
-_ESS_SOLN_SELECT = "solutionid,uniquename,friendlyname,ismanaged,version"
 
 _ESS_SOLN_DOC_LINK = (
     "https://learn.microsoft.com/en-us/microsoft-365/copilot/"
     "employee-self-service/install"
 )
-_ESS_SOLN_DESCRIPTION = "ESS base agent solution installed in the environment"
+_ESS_SOLN_DESCRIPTION = "ESS base agent package present in the environment"
+_DEFAULT_ALM_REALM = "Dev"
+_ALM_NOT_OPTED_IN_ERROR_CODE = 4003
 
 
 def run_solution_checks(runner) -> list[CheckResult]:
@@ -45,100 +32,218 @@ def run_solution_checks(runner) -> list[CheckResult]:
 
 
 def _check_ess_solution_installed(runner) -> list[CheckResult]:
-    """ESS-SOLN-001: the base ESS solution is installed in the target env.
+    """ESS-SOLN-001: the base ESS agent package is installed in the target env."""
+    minimalbots = getattr(runner, "minimalbots", None)
+    bot_id = _active_agent_bot_id(runner)
+    realm = _alm_realm(runner)
 
-    Always emits exactly one CheckResult (principle 7 — bucket multi-resource
-    findings). Never raises — all errors are caught and turned into WARNING
-    results so a transient Dataverse failure does not abort the whole
-    flightcheck run.
-    """
-    env_url = getattr(runner, "env_url", None)
-    token = getattr(runner, "dv_token", None)
-
-    if not env_url or not token:
-        return [CheckResult(roles=[Role.ESS_MAKER.value],
-            checkpoint_id="ESS-SOLN-001", category="Solution",
-            priority=Priority.CRITICAL.value, status=Status.SKIPPED.value,
-            description=_ESS_SOLN_DESCRIPTION,
-            result="Dataverse URL or access token not available in this run.",
-            doc_link=_ESS_SOLN_DOC_LINK,
-        )]
-
-    try:
-        solutions = query_all(
-            env_url, token,
-            "solutions",
-            _ESS_SOLN_SELECT,
-            _ESS_SOLN_FILTER,
-        )
-
-        if not solutions:
-            return [CheckResult(roles=[Role.ESS_MAKER.value],
-                checkpoint_id="ESS-SOLN-001", category="Solution",
-                priority=Priority.CRITICAL.value, status=Status.FAILED.value,
+    if minimalbots is None:
+        return [
+            CheckResult(
+                checkpoint_id="ESS-SOLN-001",
+                category="Solution",
+                priority=Priority.CRITICAL.value,
+                status=Status.SKIPPED.value,
                 description=_ESS_SOLN_DESCRIPTION,
-                result=(
-                    "No solution whose unique name starts with "
-                    f"'{_ESS_SOLUTION_PREFIX}' is installed in this "
-                    "environment. The base ESS agent is not present."
-                ),
+                result="Copilot Studio minimalBots PPAPI client not available in this run.",
                 remediation=(
-                    "Install the Employee Self Service agent from AppSource "
-                    "into this environment (Microsoft 365 admin center / "
-                    "AppSource -> get 'Employee Self Service' -> deploy to the "
-                    "target environment), wait for the solution import to "
-                    "finish, then re-run this check."
+                    "Run FlightCheck with a configured environment and retry. "
+                    "The check needs minimalBots PPAPI access to read ALM package state."
                 ),
                 doc_link=_ESS_SOLN_DOC_LINK,
-            )]
+                roles=[Role.ESS_MAKER.value],
+            )
+        ]
+    if not bot_id:
+        return [
+            CheckResult(
+                checkpoint_id="ESS-SOLN-001",
+                category="Solution",
+                priority=Priority.CRITICAL.value,
+                status=Status.SKIPPED.value,
+                description=_ESS_SOLN_DESCRIPTION,
+                result="No agent botId is recorded in .local/config.json.",
+                remediation=(
+                    "Run /setup so the agent's botId is recorded, then re-run FlightCheck."
+                ),
+                doc_link=_ESS_SOLN_DOC_LINK,
+                roles=[Role.ESS_MAKER.value],
+            )
+        ]
 
-        installed = ", ".join(
-            _describe_solution(s)
-            for s in sorted(solutions, key=lambda s: s.get("uniquename", ""))
-        )
-        return [CheckResult(roles=[Role.ESS_MAKER.value],
-            checkpoint_id="ESS-SOLN-001", category="Solution",
-            priority=Priority.CRITICAL.value, status=Status.PASSED.value,
-            description=_ESS_SOLN_DESCRIPTION,
-            result=f"ESS base agent solution installed: {installed}.",
-            doc_link=_ESS_SOLN_DOC_LINK,
-        )]
+    try:
+        config = minimalbots.get_configure(bot_id, realm)
 
-    except AuthExpiredError as e:
-        return [CheckResult(roles=[Role.ESS_MAKER.value],
-            checkpoint_id="ESS-SOLN-001", category="Solution",
-            priority=Priority.CRITICAL.value, status=Status.WARNING.value,
-            description=_ESS_SOLN_DESCRIPTION,
-            result=str(e),
-            remediation="Re-run FlightCheck to refresh the access token.",
-            doc_link=_ESS_SOLN_DOC_LINK,
-        )]
+        if _is_not_opted_into_alm(config):
+            return [
+                CheckResult(
+                    checkpoint_id="ESS-SOLN-001",
+                    category="Solution",
+                    priority=Priority.CRITICAL.value,
+                    status=Status.FAILED.value,
+                    description=_ESS_SOLN_DESCRIPTION,
+                    result=(
+                        f"Agent {bot_id} is not opted into ALM, so FlightCheck "
+                        "cannot confirm its GRS package state."
+                    ),
+                    remediation=(
+                        "Opt the agent into Application Lifecycle Management (ALM) "
+                        "in Copilot Studio, then re-run FlightCheck."
+                    ),
+                    doc_link=_ESS_SOLN_DOC_LINK,
+                    roles=[Role.ESS_MAKER.value],
+                )
+            ]
+
+        if not isinstance(config, dict):
+            raise TypeError(f"minimalBots GetConfigure returned {type(config).__name__}")
+        if config.get("_error"):
+            return [_error_result(config, bot_id, realm)]
+
+        grs_repository_id = config.get("grsRepositoryId")
+        commit_sha = config.get("commitSha")
+        if not grs_repository_id or not commit_sha:
+            return [
+                CheckResult(
+                    checkpoint_id="ESS-SOLN-001",
+                    category="Solution",
+                    priority=Priority.CRITICAL.value,
+                    status=Status.FAILED.value,
+                    description=_ESS_SOLN_DESCRIPTION,
+                    result=(
+                        "minimalBots ALM GetConfigure did not return both "
+                        "grsRepositoryId and commitSha. The ESS package state is absent."
+                    ),
+                    remediation=(
+                        "Install or import the Employee Self Service agent package "
+                        "for this environment, then re-run FlightCheck."
+                    ),
+                    doc_link=_ESS_SOLN_DOC_LINK,
+                    roles=[Role.ESS_MAKER.value],
+                )
+            ]
+
+        return [
+            CheckResult(
+                checkpoint_id="ESS-SOLN-001",
+                category="Solution",
+                priority=Priority.CRITICAL.value,
+                status=Status.PASSED.value,
+                description=_ESS_SOLN_DESCRIPTION,
+                result=(
+                    "ESS base agent package present in GRS: "
+                    f"repository {grs_repository_id}, commit {commit_sha}."
+                ),
+                doc_link=_ESS_SOLN_DOC_LINK,
+                roles=[Role.ESS_MAKER.value],
+            )
+        ]
     except Exception as e:
-        # Per principle 3 (fail loudly): surface unexpected Dataverse failures
-        # as WARNING rather than silently passing. Surface the HTTP status
-        # code when available so a 403 (insufficient privileges) is
-        # distinguishable from a 5xx (transient) at a glance.
+        error_payload = _response_json(e)
+        if _is_not_opted_into_alm(error_payload):
+            return [
+                CheckResult(
+                    checkpoint_id="ESS-SOLN-001",
+                    category="Solution",
+                    priority=Priority.CRITICAL.value,
+                    status=Status.FAILED.value,
+                    description=_ESS_SOLN_DESCRIPTION,
+                    result=(
+                        f"Agent {bot_id} is not opted into ALM. "
+                        "minimalBots GetConfigure returned ErrorCode 4003."
+                    ),
+                    remediation=(
+                        "Opt the agent into Application Lifecycle Management (ALM) "
+                        "in Copilot Studio, then re-run FlightCheck."
+                    ),
+                    doc_link=_ESS_SOLN_DOC_LINK,
+                    roles=[Role.ESS_MAKER.value],
+                )
+            ]
         status_code = getattr(getattr(e, "response", None), "status_code", None)
         status_hint = f" [HTTP {status_code}]" if status_code is not None else ""
-        return [CheckResult(roles=[Role.ESS_MAKER.value],
-            checkpoint_id="ESS-SOLN-001", category="Solution",
-            priority=Priority.CRITICAL.value, status=Status.WARNING.value,
-            description=_ESS_SOLN_DESCRIPTION,
-            result=(
-                f"Unable to verify the ESS solution: "
-                f"{type(e).__name__}{status_hint}: {e}"
-            ),
-            remediation=(
-                "Inspect the error above; common causes are insufficient "
-                "Dataverse privileges on the solutions table (typically "
-                "surfaces as HTTP 403) or a transient platform error (HTTP 5xx)."
-            ),
-            doc_link=_ESS_SOLN_DOC_LINK,
-        )]
+        return [
+            CheckResult(
+                checkpoint_id="ESS-SOLN-001",
+                category="Solution",
+                priority=Priority.CRITICAL.value,
+                status=Status.WARNING.value,
+                description=_ESS_SOLN_DESCRIPTION,
+                result=(
+                    "Unable to verify ESS package state from minimalBots ALM "
+                    f"GetConfigure: {type(e).__name__}{status_hint}: {e}"
+                ),
+                remediation=(
+                    "Inspect the error above; common causes are insufficient "
+                    "Copilot Studio minimalBots PPAPI permissions or a transient platform error."
+                ),
+                doc_link=_ESS_SOLN_DOC_LINK,
+                roles=[Role.ESS_MAKER.value],
+            )
+        ]
 
 
-def _describe_solution(sol: dict) -> str:
-    """Render one solution row as ``uniquename (vX.Y.Z)`` for the result text."""
-    name = sol.get("uniquename", "<unknown>")
-    version = sol.get("version")
-    return f"{name} (v{version})" if version else name
+def _active_agent_bot_id(runner) -> str | None:
+    config = getattr(runner, "config", None) or {}
+    active_slug = config.get("activeAgent")
+    for agent in config.get("agents", []) or []:
+        if active_slug and agent.get("slug") != active_slug:
+            continue
+        bot_id = agent.get("botId")
+        if bot_id:
+            return bot_id
+    single = config.get("agent") or {}
+    return single.get("botId")
+
+
+def _alm_realm(runner) -> str:
+    config = getattr(runner, "config", None) or {}
+    single = config.get("agent") or {}
+    realm = (
+        config.get("almRealm")
+        or single.get("almRealm")
+        or single.get("realm")
+        or _DEFAULT_ALM_REALM
+    )
+    return str(realm).strip() or _DEFAULT_ALM_REALM
+
+
+def _is_not_opted_into_alm(payload) -> bool:
+    return (
+        isinstance(payload, dict)
+        and payload.get("ErrorCode") == _ALM_NOT_OPTED_IN_ERROR_CODE
+    )
+
+
+def _response_json(error) -> dict:
+    response = getattr(error, "response", None)
+    if response is None:
+        return {}
+    try:
+        data = response.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _error_result(config: dict, bot_id: str, realm: str) -> CheckResult:
+    error = config.get("_error")
+    status_code = config.get("_status")
+    status_hint = f" [HTTP {status_code}]" if status_code else ""
+    return CheckResult(
+        checkpoint_id="ESS-SOLN-001",
+        category="Solution",
+        priority=Priority.CRITICAL.value,
+        status=Status.WARNING.value,
+        description=_ESS_SOLN_DESCRIPTION,
+        result=(
+            f"minimalBots ALM GetConfigure could not read package state for "
+            f"agent {bot_id} in realm {realm}: {error}{status_hint}."
+        ),
+        remediation=(
+            "Resolve minimalBots PPAPI authentication or permission issues, "
+            "then re-run FlightCheck."
+        ),
+        doc_link=_ESS_SOLN_DOC_LINK,
+        roles=[Role.ESS_MAKER.value],
+    )

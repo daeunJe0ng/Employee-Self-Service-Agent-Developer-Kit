@@ -178,11 +178,12 @@ class TestTransitiveRequirements:
         assert spec is not None and spec.key == "ESS-SOLN-001"
         assert spec.category_label == "Solution"
         assert spec.category_fn is run_solution_checks
-        # Solution presence is a pure Dataverse read.
-        assert spec.clients == frozenset({registry.DATAVERSE})
+        # DA solution/package presence reads minimalBots ALM GRS state.
+        assert spec.clients == frozenset({registry.PP_ADMIN, registry.MINIMALBOTS})
         assert spec.prereqs == ("ENV-002",)
         plan = registry.transitive_requirements("ESS-SOLN-001")
-        assert registry.DATAVERSE in plan.clients
+        assert registry.PP_ADMIN in plan.clients
+        assert registry.MINIMALBOTS in plan.clients
         assert plan.requires_config is True
         assert plan.requires_dataverse_endpoint is True
         # Own fn (run_solution_checks) plus the shared run_environment_checks

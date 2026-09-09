@@ -1,11 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Unit tests for the Copilot Studio minimalBots PPAPI client.
-
-These are documented-tier tests. They assert request construction and parsing
-against the internal OpenAPI contract, not a live captured cassette.
-"""
+"""Unit tests for the Copilot Studio minimalBots PPAPI client."""
 
 from __future__ import annotations
 
@@ -118,9 +114,9 @@ def test_get_configure_sends_realm_and_api_version(minimalbots_client) -> None:
         api_version="2022-03-01-preview",
     )
 
-    assert data["values"] == {"EnvironmentName": "ESS test"}
-    assert data["grsRepositoryId"] == "repo-123"
-    assert data["commitSha"] == "abc123"
+    assert data["values"]["botName"] == "ESS HR - Cosmos DA (ServiceNow, flowless)"
+    assert data["grsRepositoryId"] == "00000000-0000-0000-0000-000000001111"
+    assert data["commitSha"] == "0b3007b07220fbbea5a7cf7c5a0c4681a247018a"
 
 
 @responses.activate
