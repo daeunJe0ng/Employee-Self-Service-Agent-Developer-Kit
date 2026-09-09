@@ -53,6 +53,8 @@ from _common import announce, build_cassette, chdir_kit_root, confirm_or_exit
 DEFAULT_ENV_ID = "5dd45044-46ac-e5c5-ab49-01f33d403cb0"
 DEFAULT_TENANT_ID = "935884d7-bdee-469b-a461-fcc530a3ac83"
 DEFAULT_GOOD_BOT_ID = "dad486e8-a0f5-4d64-8774-fe04df05baf5"
+# ALM-opted agent used for the export -> import -> delete publishing probe.
+DEFAULT_ALM_BOT_ID = "a7828f58-bde1-451c-8105-3c2c785cd9e0"
 DEFAULT_RING = "prod"
 DEFAULT_REALMS = "Dev,Test,Prod"
 
@@ -140,12 +142,55 @@ def main() -> None:
                     print(f"    [{label}] configure realm={realm} raised: {exc!s}")
     print()
 
+    # ---- Cassette 3 (opt-in): publishing export -> import -> delete probe ----
+    # Two-way door: imports a transient Dev agent from a real export, then
+    # deletes it so the environment is left clean. Gated behind an explicit
+    # env flag because it MUTATES the target environment. The redactor swaps
+    # the real package bytes (export response body + import request body) for
+    # a synthetic stand-in zip before anything is written to disk.
+    if os.environ.get("ESS_MB_CAPTURE_PUBLISHING") == "1":
+        alm_id = os.environ.get("ESS_ALM_BOT_ID", DEFAULT_ALM_BOT_ID)
+        print(f"  Step 4: recording publishing cassette (MUTATING two-way door)")
+        print(f"    export source (ALM-opted): {alm_id}")
+        created_id = None
+        try:
+            with build_cassette("flightcheck_minimalbots_publishing"):
+                package = client.export(alm_id)
+                print(f"    export -> {len(package)} bytes"
+                      f"{' (EMPTY - export failed)' if not package else ''}")
+                if package:
+                    result = client.import_package(package)
+                    if isinstance(result, dict) and "_error" not in result:
+                        created_id = result.get("cdsBotId")
+                        print(f"    import -> created transient agent {created_id} "
+                              f"schemaName={result.get('schemaName')!r}")
+                        ok = client.delete_bot(created_id)
+                        print(f"    delete {created_id} -> {'OK (204)' if ok else 'FAILED'}")
+                        if ok:
+                            created_id = None
+                    else:
+                        print(f"    import -> ERROR {result!r}")
+        finally:
+            # Safety net: guarantee no residue even if an assertion/exception
+            # interrupted the recorded flow above.
+            if created_id:
+                print(f"    CLEANUP: deleting leftover agent {created_id} ...")
+                if client.delete_bot(created_id):
+                    print(f"    CLEANUP: deleted {created_id}")
+                else:
+                    print(f"    CLEANUP FAILED - manually delete agent {created_id} "
+                          f"in env {env_id}")
+        print()
+
     print("Cassettes written:")
     print("  tests/fixtures/cassettes/flightcheck_minimalbots_components.yaml")
     print("  tests/fixtures/cassettes/flightcheck_minimalbots_alm.yaml")
+    if os.environ.get("ESS_MB_CAPTURE_PUBLISHING") == "1":
+        print("  tests/fixtures/cassettes/flightcheck_minimalbots_publishing.yaml")
     print()
-    print("Review both by hand for leftover tenant-specific data (connector")
-    print("display names, real GRS repository ids) before committing.")
+    print("Review by hand for leftover tenant-specific data (connector display")
+    print("names, real GRS repository ids) before committing. The publishing")
+    print("cassette must contain the SYNTHETIC stand-in zip, never real bytes.")
 
 
 if __name__ == "__main__":

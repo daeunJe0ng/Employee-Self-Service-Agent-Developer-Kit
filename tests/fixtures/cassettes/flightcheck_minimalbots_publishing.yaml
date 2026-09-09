@@ -1,0 +1,144 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '0'
+      Content-Type:
+      - application/json
+      User-Agent:
+      - python-requests/2.34.2
+      x-ms-client-name:
+      - EssAdk
+      x-ms-client-session-id:
+      - 00000000-0000-0000-0000-000000001111
+      x-ms-last-retry:
+      - 'false'
+      x-ms-retry-count:
+      - '0'
+    method: POST
+    uri: https://mockenv.00.environment.api.test.powerplatform.com/copilotstudio/minimalBots/alm/00000000-0000-0000-0000-000000001111/export?api-version=2024-10-01
+  response:
+    body:
+      string: !!binary |
+        UEsDBBQAAAAAAHZ8KV26DNyHSAAAAEgAAAAKAAAAUkVBRE1FLnR4dHN5bnRoZXRpYyBBTE0gcGFj
+        a2FnZSAtIHJlYWwgZXhwb3J0L2ltcG9ydCBib2R5IHJlZGFjdGVkIGZvciBwdWJsaWMgcmVwb1BL
+        AQIUABQAAAAAAHZ8KV26DNyHSAAAAEgAAAAKAAAAAAAAAAAAAACAAQAAAABSRUFETUUudHh0UEsF
+        BgAAAAABAAEAOAAAAHAAAAAAAA==
+    headers:
+      Content-Disposition:
+      - attachment; filename="ESS HR - Cosmos DA (ServiceNow, flowless)_dev.zip";
+        filename*=UTF-8''ESS%20HR%20-%20Cosmos%20DA%20%28ServiceNow%2C%20flowless%29_dev.zip
+      Content-Length:
+      - '73109'
+      Content-Type:
+      - application/zip
+      Date:
+      - Wed, 09 Sep 2026 22:35:21 GMT
+      Server-Timing:
+      - x-ms-igw-upstream-headers;dur=4072.6,x-ms-igw-req-overhead;dur=1.7
+      Strict-Transport-Security:
+      - max-age=31536000; includeSubDomains
+      X-Content-Type-Options:
+      - nosniff
+      X-Frame-Options:
+      - sameorigin
+      x-cci-botdesignerserver-buildid:
+      - 1.2026.909.11
+      x-ms-activity-vector:
+      - 00.00.00
+      x-ms-correlation-id:
+      - REDACTED
+      x-ms-gateway-clusters:
+      - tstil002wus
+      x-ms-igw-tracking-id:
+      - fe5095d8-a50c-4157-990f-00758b4bf05a20260909223517_tstil002wusgb0_4
+      x-ms-islandgateway:
+      - _tstil002wusgb0_4
+      x-ms-ppapigateway:
+      - _tstil002wusgb0_0
+      x-ms-service-request-id:
+      - REDACTED
+      x-servicefabric:
+      - NoRetry
+    status:
+      code: 200
+      message: OK
+- request:
+    body: <synthetic-multipart-package-redacted>
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '73290'
+      Content-Type:
+      - multipart/form-data; boundary=00000000000000000000000000000000
+      User-Agent:
+      - python-requests/2.34.2
+      x-ms-client-name:
+      - EssAdk
+      x-ms-client-session-id:
+      - 00000000-0000-0000-0000-000000001111
+      x-ms-last-retry:
+      - 'false'
+      x-ms-retry-count:
+      - '0'
+    method: POST
+    uri: https://mockenv.00.environment.api.test.powerplatform.com/copilotstudio/minimalBots/alm/import?api-version=2024-10-01
+  response:
+    body:
+      string: '{"ErrorCode":6102,"ErrorMessage":"A Dev agent with schema ''gptagent_esshr_cosmosda_v2''
+        already exists in environment ''00000000-0000-0000-0000-000000001111''. To
+        overwrite it, resubmit the import with its schema name.","ErrorInfo":null,"Error":{"RetryIn":null,"InnerErrors":[],"Code":"DuplicateItemError","Message":"A
+        Dev agent with schema ''gptagent_esshr_cosmosda_v2'' already exists in environment
+        ''00000000-0000-0000-0000-000000001111''. To overwrite it, resubmit the import
+        with its schema name.","Properties":{},"Diagnostics":"<internal-diagnostics-redacted>"}}'
+    headers:
+      Cache-Control:
+      - no-cache, no-store
+      Content-Type:
+      - application/json
+      Date:
+      - Wed, 09 Sep 2026 22:35:22 GMT
+      Server-Timing:
+      - x-ms-igw-upstream-headers;dur=927.1,x-ms-igw-req-overhead;dur=0.7
+      Strict-Transport-Security:
+      - max-age=31536000; includeSubDomains
+      Transfer-Encoding:
+      - chunked
+      X-Content-Type-Options:
+      - nosniff
+      X-Frame-Options:
+      - sameorigin
+      x-cci-botdesignerserver-buildid:
+      - 1.2026.909.11
+      x-ms-activity-vector:
+      - 00.00.00
+      x-ms-correlation-id:
+      - REDACTED
+      x-ms-gateway-clusters:
+      - tstil002wus
+      x-ms-igw-tracking-id:
+      - c869a12f-4155-4e49-a000-0022cbd1c7a420260909223522_tstil002wusgb0_0
+      x-ms-islandgateway:
+      - _tstil002wusgb0_0
+      x-ms-ppapigateway:
+      - _tstil002wusgb0_0
+      x-ms-service-request-id:
+      - REDACTED
+      x-servicefabric:
+      - NoRetry
+    status:
+      code: 409
+      message: Conflict
+version: 1

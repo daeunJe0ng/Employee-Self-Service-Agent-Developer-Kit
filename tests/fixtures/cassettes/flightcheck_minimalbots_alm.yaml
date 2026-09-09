@@ -34,9 +34,9 @@ interactions:
       Content-Type:
       - application/json
       Date:
-      - Wed, 09 Sep 2026 21:24:12 GMT
+      - Wed, 09 Sep 2026 22:39:08 GMT
       Server-Timing:
-      - x-ms-igw-upstream-headers;dur=12.2,x-ms-igw-req-overhead;dur=0.6
+      - x-ms-igw-upstream-headers;dur=25.2,x-ms-igw-req-overhead;dur=0.8
       Strict-Transport-Security:
       - max-age=31536000; includeSubDomains
       Transfer-Encoding:
@@ -46,7 +46,7 @@ interactions:
       X-Frame-Options:
       - sameorigin
       x-cci-botdesignerserver-buildid:
-      - 1.2026.909.10
+      - 1.2026.909.11
       x-ms-activity-vector:
       - 00.00.00
       x-ms-correlation-id:
@@ -54,11 +54,11 @@ interactions:
       x-ms-gateway-clusters:
       - tstil002wus
       x-ms-igw-tracking-id:
-      - c0610a7e-dbed-4200-b842-d5cebc90a54120260909212412_tstil002wusgb0_4
+      - 894f1b98-6a23-47f2-9ef7-4d98218eb00720260909223908_tstil002wusgb0_0
       x-ms-islandgateway:
-      - _tstil002wusgb0_4
-      x-ms-ppapigateway:
       - _tstil002wusgb0_0
+      x-ms-ppapigateway:
+      - _tstil002wusgb0_2
       x-ms-service-request-id:
       - REDACTED
       x-servicefabric:
@@ -101,9 +101,9 @@ interactions:
       Content-Type:
       - application/json
       Date:
-      - Wed, 09 Sep 2026 21:24:13 GMT
+      - Wed, 09 Sep 2026 22:39:08 GMT
       Server-Timing:
-      - x-ms-igw-upstream-headers;dur=130.5,x-ms-igw-req-overhead;dur=0.8
+      - x-ms-igw-upstream-headers;dur=48.3,x-ms-igw-req-overhead;dur=0.8
       Strict-Transport-Security:
       - max-age=31536000; includeSubDomains
       Transfer-Encoding:
@@ -113,7 +113,7 @@ interactions:
       X-Frame-Options:
       - sameorigin
       x-cci-botdesignerserver-buildid:
-      - 1.2026.909.10
+      - 1.2026.909.11
       x-ms-activity-vector:
       - 00.00.00
       x-ms-correlation-id:
@@ -121,7 +121,7 @@ interactions:
       x-ms-gateway-clusters:
       - tstil002wus
       x-ms-igw-tracking-id:
-      - fa39a052-999e-4f4c-b7d9-c636a8dde2c820260909212413_tstil002wusgb0_2
+      - 95029245-ef7e-4276-b88d-c9e15fbaba5a20260909223909_tstil002wusgb0_2
       x-ms-islandgateway:
       - _tstil002wusgb0_2
       x-ms-ppapigateway:
@@ -168,9 +168,9 @@ interactions:
       Content-Type:
       - application/json
       Date:
-      - Wed, 09 Sep 2026 21:24:14 GMT
+      - Wed, 09 Sep 2026 22:39:09 GMT
       Server-Timing:
-      - x-ms-igw-upstream-headers;dur=57.8,x-ms-igw-req-overhead;dur=0.5
+      - x-ms-igw-upstream-headers;dur=58.2,x-ms-igw-req-overhead;dur=0.8
       Strict-Transport-Security:
       - max-age=31536000; includeSubDomains
       Transfer-Encoding:
@@ -180,7 +180,7 @@ interactions:
       X-Frame-Options:
       - sameorigin
       x-cci-botdesignerserver-buildid:
-      - 1.2026.909.10
+      - 1.2026.909.11
       x-ms-activity-vector:
       - 00.00.00
       x-ms-correlation-id:
@@ -188,11 +188,11 @@ interactions:
       x-ms-gateway-clusters:
       - tstil002wus
       x-ms-igw-tracking-id:
-      - 15f2a381-5fe6-4130-b61c-e24a03bcb2a220260909212414_tstil002wusgb0_3
+      - 42011cad-1ca4-4cd7-9ce2-36a3005d7bbe20260909223909_tstil002wusgb0_0
       x-ms-islandgateway:
-      - _tstil002wusgb0_3
+      - _tstil002wusgb0_0
       x-ms-ppapigateway:
-      - _tstil002wusgb0_4
+      - _tstil002wusgb0_2
       x-ms-service-request-id:
       - REDACTED
       x-servicefabric:
@@ -225,7 +225,7 @@ interactions:
     uri: https://mockenv.00.environment.api.test.powerplatform.com/copilotstudio/minimalBots/alm/00000000-0000-0000-0000-000000001111/configure?realm=Dev&api-version=2024-10-01
   response:
     body:
-      string: '{"realm":"Dev","cdsBotId":"00000000-0000-0000-0000-000000001111","schemaName":"gptagent_esshr_cosmosda_v2","grsRepositoryId":"00000000-0000-0000-0000-000000001111","commitSha":"0b3007b07220fbbea5a7cf7c5a0c4681a247018a","values":{"botName":"ESS
+      string: '{"realm":"Dev","cdsBotId":"00000000-0000-0000-0000-000000001111","schemaName":"gptagent_esshr_cosmosda_v2","grsRepositoryId":"00000000-0000-0000-0000-000000001111","commitSha":"0000000000000000000000000000000000000000","values":{"botName":"ESS
         HR - Cosmos DA (ServiceNow, flowless)","gptDisplayName":"ESS HR - Cosmos DA
         (ServiceNow, flowless)"},"flows":{},"connections":{"gptagent_esshr_cosmosda_v2.shared_service-now.servicenow":{"connectorId":"/providers/Microsoft.PowerApps/apis/shared_service-now","connectionId":"00000000000000000000000000000000"}}}'
     headers:
@@ -236,9 +236,9 @@ interactions:
       Content-Type:
       - application/json; charset=utf-8
       Date:
-      - Wed, 09 Sep 2026 21:24:17 GMT
+      - Wed, 09 Sep 2026 22:39:13 GMT
       Server-Timing:
-      - x-ms-igw-upstream-headers;dur=3399.6,x-ms-igw-req-overhead;dur=1.1
+      - x-ms-igw-upstream-headers;dur=3270.5,x-ms-igw-req-overhead;dur=0.7
       Strict-Transport-Security:
       - max-age=31536000; includeSubDomains
       X-Content-Type-Options:
@@ -246,7 +246,7 @@ interactions:
       X-Frame-Options:
       - sameorigin
       x-cci-botdesignerserver-buildid:
-      - 1.2026.909.10
+      - 1.2026.909.11
       x-ms-activity-vector:
       - 00.00.00
       x-ms-correlation-id:
@@ -254,11 +254,11 @@ interactions:
       x-ms-gateway-clusters:
       - tstil002wus
       x-ms-igw-tracking-id:
-      - b8a5cb3d-dd87-49f0-83d0-d8a2decacfbf20260909212415_tstil002wusgb0_1
+      - 5cea7d66-fbc0-48cc-aece-cbec72de855620260909223910_tstil002wusgb0_3
       x-ms-islandgateway:
-      - _tstil002wusgb0_1
+      - _tstil002wusgb0_3
       x-ms-ppapigateway:
-      - _tstil002wusgb0_2
+      - _tstil002wusgb0_0
       x-ms-service-request-id:
       - REDACTED
       x-servicefabric:
@@ -291,7 +291,7 @@ interactions:
     uri: https://mockenv.00.environment.api.test.powerplatform.com/copilotstudio/minimalBots/alm/00000000-0000-0000-0000-000000001111/configure?realm=Test&api-version=2024-10-01
   response:
     body:
-      string: '{"realm":"Test","cdsBotId":"00000000-0000-0000-0000-000000001111","schemaName":"gptagent_esshr_cosmosda_v2_test","grsRepositoryId":"00000000-0000-0000-0000-000000001111","commitSha":"0b3007b07220fbbea5a7cf7c5a0c4681a247018a","values":{},"flows":{},"connections":{}}'
+      string: '{"realm":"Test","cdsBotId":"00000000-0000-0000-0000-000000001111","schemaName":"gptagent_esshr_cosmosda_v2_test","grsRepositoryId":"00000000-0000-0000-0000-000000001111","commitSha":"0000000000000000000000000000000000000000","values":{},"flows":{},"connections":{}}'
     headers:
       Cache-Control:
       - no-cache, no-store
@@ -300,9 +300,9 @@ interactions:
       Content-Type:
       - application/json; charset=utf-8
       Date:
-      - Wed, 09 Sep 2026 21:24:21 GMT
+      - Wed, 09 Sep 2026 22:39:16 GMT
       Server-Timing:
-      - x-ms-igw-upstream-headers;dur=2070.7,x-ms-igw-req-overhead;dur=0.8
+      - x-ms-igw-upstream-headers;dur=2432.7,x-ms-igw-req-overhead;dur=0.5
       Strict-Transport-Security:
       - max-age=31536000; includeSubDomains
       X-Content-Type-Options:
@@ -310,7 +310,7 @@ interactions:
       X-Frame-Options:
       - sameorigin
       x-cci-botdesignerserver-buildid:
-      - 1.2026.909.10
+      - 1.2026.909.11
       x-ms-activity-vector:
       - 00.00.00
       x-ms-correlation-id:
@@ -318,11 +318,11 @@ interactions:
       x-ms-gateway-clusters:
       - tstil002wus
       x-ms-igw-tracking-id:
-      - d69ff4ed-9d40-4daf-acf2-0b5aa655556c20260909212419_tstil002wusgb0_4
+      - a6bc2b2b-ffad-4acd-8f16-e24f6fc6458020260909223914_tstil002wusgb0_4
       x-ms-islandgateway:
       - _tstil002wusgb0_4
       x-ms-ppapigateway:
-      - _tstil002wusgb0_0
+      - _tstil002wusgb0_4
       x-ms-service-request-id:
       - REDACTED
       x-servicefabric:
@@ -355,7 +355,7 @@ interactions:
     uri: https://mockenv.00.environment.api.test.powerplatform.com/copilotstudio/minimalBots/alm/00000000-0000-0000-0000-000000001111/configure?realm=Prod&api-version=2024-10-01
   response:
     body:
-      string: '{"realm":"Prod","cdsBotId":"00000000-0000-0000-0000-000000001111","schemaName":"gptagent_esshr_cosmosda_v2_prod","grsRepositoryId":"00000000-0000-0000-0000-000000001111","commitSha":"0b3007b07220fbbea5a7cf7c5a0c4681a247018a","values":{},"flows":{},"connections":{}}'
+      string: '{"realm":"Prod","cdsBotId":"00000000-0000-0000-0000-000000001111","schemaName":"gptagent_esshr_cosmosda_v2_prod","grsRepositoryId":"00000000-0000-0000-0000-000000001111","commitSha":"0000000000000000000000000000000000000000","values":{},"flows":{},"connections":{}}'
     headers:
       Cache-Control:
       - no-cache, no-store
@@ -364,9 +364,9 @@ interactions:
       Content-Type:
       - application/json; charset=utf-8
       Date:
-      - Wed, 09 Sep 2026 21:24:23 GMT
+      - Wed, 09 Sep 2026 22:39:19 GMT
       Server-Timing:
-      - x-ms-igw-upstream-headers;dur=1908.6,x-ms-igw-req-overhead;dur=0.7
+      - x-ms-igw-upstream-headers;dur=2048.1,x-ms-igw-req-overhead;dur=0.7
       Strict-Transport-Security:
       - max-age=31536000; includeSubDomains
       X-Content-Type-Options:
@@ -374,7 +374,7 @@ interactions:
       X-Frame-Options:
       - sameorigin
       x-cci-botdesignerserver-buildid:
-      - 1.2026.909.10
+      - 1.2026.909.11
       x-ms-activity-vector:
       - 00.00.00
       x-ms-correlation-id:
@@ -382,11 +382,11 @@ interactions:
       x-ms-gateway-clusters:
       - tstil002wus
       x-ms-igw-tracking-id:
-      - 7388e95e-9de0-4464-ba0e-177153f7981d20260909212421_tstil002wusgb0_0
+      - ede95f91-374f-4e87-ad28-37a105c8a9bd20260909223917_tstil002wusgb0_3
       x-ms-islandgateway:
-      - _tstil002wusgb0_0
+      - _tstil002wusgb0_3
       x-ms-ppapigateway:
-      - _tstil002wusgb0_1
+      - _tstil002wusgb0_3
       x-ms-service-request-id:
       - REDACTED
       x-servicefabric:

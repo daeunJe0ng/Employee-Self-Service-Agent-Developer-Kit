@@ -26,12 +26,42 @@ cassette file to apply additional substitutions.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
+
+
+def _synthetic_zip() -> bytes:
+    """A tiny, valid stand-in .zip used to replace any real binary package
+    body before it is written to a cassette.
+
+    Real ALM export packages (and the import multipart request that carries
+    them) are binary and cannot be scrubbed by the text redactor, so a real
+    body could leak tenant content (schema names, connector display names,
+    agent internals) into this PUBLIC repo. We keep the interaction's shape
+    (status, headers, content-type, zip magic) but never persist real bytes.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            "README.txt",
+            "synthetic ALM package - real export/import body redacted for public repo",
+        )
+    return buf.getvalue()
+
+
+SYNTHETIC_ZIP = _synthetic_zip()
+_SYNTHETIC_REQUEST_BODY = b"<synthetic-multipart-package-redacted>"
+
+
+def _is_binary_package(raw: bytes) -> bool:
+    """True if bytes look like a zip/binary package (zip magic or NUL byte)."""
+    return raw[:2] == b"PK" or b"\x00" in raw[:512]
 
 # Make the production source importable without a package install.
 # Scope: FlightCheck only, plus the parts of the kit's shared auth.py
@@ -307,6 +337,14 @@ REDACT_REGEX: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(r'"Diagnostics":"(?:[^"\\]|\\.)*"'),
         r'"Diagnostics":"<internal-diagnostics-redacted>"',
+    ),
+    # GRS commit SHA: a 40-hex git commit hash identifying internal ALM repo
+    # state. Not a GUID, so the GUID rules miss it. Replace with a fixed
+    # all-zero SHA so replay tests can still assert a 40-hex commitSha is
+    # present without leaking the real internal commit.
+    (
+        re.compile(r'"commitSha":"[0-9a-f]{40}"'),
+        r'"commitSha":"0000000000000000000000000000000000000000"',
     ),
 ]
 
@@ -651,11 +689,15 @@ def _before_record_request(request: Any) -> Any:
     if getattr(request, "body", None):
         body = request.body
         if isinstance(body, bytes):
-            try:
-                body = body.decode("utf-8")
-                request.body = _redact_body_text(body).encode("utf-8")
-            except UnicodeDecodeError:
-                pass  # leave binary bodies alone
+            if _is_binary_package(body):
+                request.body = _SYNTHETIC_REQUEST_BODY
+            else:
+                try:
+                    body = body.decode("utf-8")
+                    request.body = _redact_body_text(body).encode("utf-8")
+                except UnicodeDecodeError:
+                    # Non-text, non-package binary: never persist raw bytes.
+                    request.body = _SYNTHETIC_REQUEST_BODY
         elif isinstance(body, str):
             request.body = _redact_body_text(body)
     return request
@@ -669,11 +711,15 @@ def _before_record_response(response: dict[str, Any]) -> dict[str, Any]:
     if isinstance(body, dict) and "string" in body:
         raw = body["string"]
         if isinstance(raw, bytes):
-            try:
-                decoded = raw.decode("utf-8")
-                body["string"] = _redact_body_text(decoded).encode("utf-8")
-            except UnicodeDecodeError:
-                pass
+            if _is_binary_package(raw):
+                body["string"] = SYNTHETIC_ZIP
+            else:
+                try:
+                    decoded = raw.decode("utf-8")
+                    body["string"] = _redact_body_text(decoded).encode("utf-8")
+                except UnicodeDecodeError:
+                    # Non-text, non-package binary: never persist raw bytes.
+                    body["string"] = SYNTHETIC_ZIP
         elif isinstance(raw, str):
             body["string"] = _redact_body_text(raw)
     return response
