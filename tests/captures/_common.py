@@ -283,17 +283,30 @@ REDACT_REGEX: list[tuple[re.Pattern[str], str]] = [
     # Power Automate callback + run-content URLs, e.g.
     #   f7962332f9b6e6ad8a727c3c4c78d7.0c.environment.api.powerplatform.com
     #   <same>.environment.api.powerplatformusercontent.com
+    #   <same>.environment.api.test.powerplatform.com   (non-prod rings)
     # The leading labels are the BAP environment GUID with dashes stripped
-    # and split (30 hex `.` 2 hex), so the dashed-GUID rule above never
-    # matches them. That GUID identifies the tenant's environment and MUST
-    # be scrubbed. `usercontent` is preserved so the URL shape stays real.
+    # and split (prod 30 hex `.` 2 hex; non-prod rings 31 hex `.` 1 hex),
+    # so the dashed-GUID rule above never matches them. That GUID
+    # identifies the tenant's environment and MUST be scrubbed. The ring
+    # infix (test/preprod/int) and `usercontent` are preserved so the URL
+    # shape stays real.
     (
         re.compile(
             r"\b[0-9a-f]{16,32}\.[0-9a-f]{1,8}\.environment\.api\."
+            r"((?:test|preprod|int)\.)?"
             r"(powerplatformusercontent|powerplatform)\.com\b",
             re.IGNORECASE,
         ),
-        r"mockenv.00.environment.api.\1.com",
+        r"mockenv.00.environment.api.\1\2.com",
+    ),
+    # Internal server exception detail. Control-plane 4xx/5xx bodies embed a
+    # `Diagnostics` field with the full .NET stack trace: build-agent paths
+    # (C:\__w\...), internal namespaces, source file names, and line numbers.
+    # None of that is needed to replay an error and it should never ship in a
+    # public fixture, so scrub the whole value.
+    (
+        re.compile(r'"Diagnostics":"(?:[^"\\]|\\.)*"'),
+        r'"Diagnostics":"<internal-diagnostics-redacted>"',
     ),
 ]
 
