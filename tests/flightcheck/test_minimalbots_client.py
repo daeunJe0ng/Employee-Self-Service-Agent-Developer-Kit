@@ -125,9 +125,9 @@ def test_get_configure_sends_realm_and_api_version(minimalbots_client) -> None:
         api_version="2022-03-01-preview",
     )
 
-    assert data["values"] == {"EnvironmentName": "ESS test"}
-    assert data["grsRepositoryId"] == "repo-123"
-    assert data["commitSha"] == "abc123"
+    assert data["values"] == {"botName": "ESS HR Agent"}
+    assert data["grsRepositoryId"] == mb.MOCK_GRS_REPOSITORY_ID
+    assert data["commitSha"] == mb.MOCK_COMMIT_SHA
 
 
 @responses.activate

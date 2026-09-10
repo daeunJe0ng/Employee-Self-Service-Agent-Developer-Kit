@@ -17,7 +17,10 @@ from ._maker_urls import (
     maker_solution_url,
     maker_solutions_url,
 )
-from ._minimalbots_connection_refs import read_minimalbots_connection_references
+from ._minimalbots_connection_refs import (
+    configured_bot_ids,
+    read_minimalbots_connection_references,
+)
 from .connections import get_connection_status
 from .licensing import (
     _CAPACITY_DOC,
@@ -28,6 +31,202 @@ from .licensing import (
 from auth import query_all, dataverse_get, AuthExpiredError  # scripts/auth.py, on path via cli.py
 
 DOC_BASE = "https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service"
+
+_ENV004_GRS_DESCRIPTION = "ESS agent GRS commit pin"
+_ENV004_GRS_EXPECTED_COMMIT_KEYS = (
+    "expectedGrsCommitSha",
+    "grsExpectedCommitSha",
+    "expectedMinimalBotsCommitSha",
+    "expectedEssSolutionCommitSha",
+)
+_ENV004_GRS_REALM_KEYS = (
+    "minimalBotsAlmRealm",
+    "grsRealm",
+    "almRealm",
+)
+_ENV004_GRS_DEFAULT_REALM = "Dev"
+_ENV004_GRS_REALMS = {
+    "dev": "Dev",
+    "test": "Test",
+    "prod": "Prod",
+    "production": "Prod",
+}
+
+
+def _env004_active_agent_config(config: dict) -> dict:
+    """Return the active agent block from the setup config, if present."""
+    if not isinstance(config, dict):
+        return {}
+    agent = config.get("agent")
+    if isinstance(agent, dict) and agent:
+        return agent
+
+    agents = config.get("agents") or []
+    active = config.get("activeAgent", "")
+    if isinstance(agents, list):
+        for candidate in agents:
+            if isinstance(candidate, dict) and candidate.get("slug") == active:
+                return candidate
+        for candidate in agents:
+            if isinstance(candidate, dict):
+                return candidate
+    return {}
+
+
+def _env004_config_value(config: dict, keys: tuple[str, ...]) -> str:
+    """Read a string setting from active-agent config first, then top-level config."""
+    active_agent = _env004_active_agent_config(config)
+    for source in (active_agent, config):
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _env004_grs_commit_pin_result(runner) -> CheckResult:
+    """Validate the minimalBots ALM commit pin when an expected commit is configured."""
+    config = getattr(runner, "config", None) or {}
+    expected_commit = _env004_config_value(config, _ENV004_GRS_EXPECTED_COMMIT_KEYS)
+    realm_raw = (
+        _env004_config_value(config, _ENV004_GRS_REALM_KEYS)
+        or _ENV004_GRS_DEFAULT_REALM
+    )
+    realm = _ENV004_GRS_REALMS.get(realm_raw.lower())
+
+    if not expected_commit:
+        return CheckResult(
+            roles=[Role.ESS_MAKER.value],
+            checkpoint_id="ENV-004-GRS",
+            category="Environment",
+            priority=Priority.HIGH.value,
+            status=Status.SKIPPED.value,
+            description=_ENV004_GRS_DESCRIPTION,
+            result="No expected GRS commit SHA is configured, so the minimalBots ALM commit pin was not judged.",
+            remediation=(
+                "Record the expected ESS solution commit SHA in .local/config.json "
+                "using expectedGrsCommitSha (top-level or on the active agent), "
+                "then re-run FlightCheck."
+            ),
+        )
+
+    if not realm:
+        return CheckResult(
+            roles=[Role.ESS_MAKER.value],
+            checkpoint_id="ENV-004-GRS",
+            category="Environment",
+            priority=Priority.HIGH.value,
+            status=Status.FAILED.value,
+            description=_ENV004_GRS_DESCRIPTION,
+            result=(
+                f"Configured minimalBots ALM realm '{realm_raw}' is invalid. "
+                "Expected one of Dev, Test, or Prod."
+            ),
+            remediation=(
+                "Set minimalBotsAlmRealm, grsRealm, or almRealm in "
+                ".local/config.json to Dev, Test, or Prod."
+            ),
+        )
+
+    bot_ids = configured_bot_ids(runner)
+    if not bot_ids:
+        return CheckResult(
+            roles=[Role.ESS_MAKER.value],
+            checkpoint_id="ENV-004-GRS",
+            category="Environment",
+            priority=Priority.HIGH.value,
+            status=Status.SKIPPED.value,
+            description=_ENV004_GRS_DESCRIPTION,
+            result="No configured agent botId is available, so the minimalBots ALM commit pin was not judged.",
+            remediation="Run /setup so .local/config.json records the agent botId, then re-run FlightCheck.",
+        )
+
+    minimalbots = getattr(runner, "minimalbots", None)
+    mismatches = []
+    missing_commit = []
+    for bot_id in bot_ids:
+        try:
+            data = minimalbots.get_configure(bot_id, realm)
+        except Exception as e:
+            return CheckResult(
+                roles=[Role.ESS_MAKER.value],
+                checkpoint_id="ENV-004-GRS",
+                category="Environment",
+                priority=Priority.HIGH.value,
+                status=Status.WARNING.value,
+                description=_ENV004_GRS_DESCRIPTION,
+                result=f"Could not read minimalBots ALM configure for realm {realm}: {e}",
+                remediation=(
+                    "Ensure the agent is opted into minimalBots ALM for this realm "
+                    "and that FlightCheck is signed in to Copilot Studio minimalBots."
+                ),
+            )
+        if isinstance(data, dict) and data.get("_error"):
+            status = (
+                Status.SKIPPED.value
+                if data.get("_error") == "not_configured"
+                else Status.WARNING.value
+            )
+            return CheckResult(
+                roles=[Role.ESS_MAKER.value],
+                checkpoint_id="ENV-004-GRS",
+                category="Environment",
+                priority=Priority.HIGH.value,
+                status=status,
+                description=_ENV004_GRS_DESCRIPTION,
+                result=f"Could not read minimalBots ALM configure for realm {realm}: {data['_error']}",
+                remediation=(
+                    "Ensure the agent is opted into minimalBots ALM for this realm "
+                    "and that FlightCheck is signed in to Copilot Studio minimalBots."
+                ),
+            )
+        observed_commit = (data or {}).get("commitSha") or ""
+        if not observed_commit:
+            missing_commit.append(bot_id)
+        elif observed_commit.lower() != expected_commit.lower():
+            mismatches.append((bot_id, observed_commit))
+
+    if mismatches or missing_commit:
+        parts = []
+        if mismatches:
+            parts.extend(
+                f"botId {bot_id} has commitSha {observed}"
+                for bot_id, observed in mismatches
+            )
+        if missing_commit:
+            parts.extend(f"botId {bot_id} returned no commitSha" for bot_id in missing_commit)
+        return CheckResult(
+            roles=[Role.ESS_MAKER.value],
+            checkpoint_id="ENV-004-GRS",
+            category="Environment",
+            priority=Priority.HIGH.value,
+            status=Status.FAILED.value,
+            description=_ENV004_GRS_DESCRIPTION,
+            result=(
+                f"Expected GRS commit SHA {expected_commit} for realm {realm}, but "
+                + "; ".join(parts)
+            ),
+            remediation=(
+                "Publish or import the ESS agent solution built from the expected "
+                "commit, or update expectedGrsCommitSha only after confirming the "
+                "new commit is the intended release."
+            ),
+        )
+
+    return CheckResult(
+        roles=[Role.ESS_MAKER.value],
+        checkpoint_id="ENV-004-GRS",
+        category="Environment",
+        priority=Priority.HIGH.value,
+        status=Status.PASSED.value,
+        description=_ENV004_GRS_DESCRIPTION,
+        result=(
+            f"minimalBots ALM configure for realm {realm} reports expected "
+            f"GRS commit SHA {expected_commit}."
+        ),
+    )
 
 
 def _resolve_ref_solutions(
@@ -677,10 +876,12 @@ def _check_connections_and_refs(runner) -> list[CheckResult]:
         len(orphan_refs) > 0 or len(unbound_refs) > 0 or len(missing_ref_names) > 0
     )
     has_unbound_conns = len(unbound_conns) > 0
+    grs_result = _env004_grs_commit_pin_result(runner)
+    grs_status = grs_result.status if grs_result else Status.SKIPPED.value
 
-    if has_failing_refs:
+    if has_failing_refs or grs_status == Status.FAILED.value:
         overall_status = Status.FAILED.value
-    elif has_unbound_conns:
+    elif has_unbound_conns or grs_status == Status.WARNING.value:
         overall_status = Status.WARNING.value
     else:
         overall_status = Status.PASSED.value
@@ -700,6 +901,14 @@ def _check_connections_and_refs(runner) -> list[CheckResult]:
         summary_parts.append(f"{len(missing_ref_names)} missing ref(s)")
     if unbound_conns:
         summary_parts.append(f"{len(unbound_conns)} unbound conn(s)")
+    if grs_status == Status.PASSED.value:
+        summary_parts.append("GRS commit pin matched")
+    elif grs_status == Status.FAILED.value:
+        summary_parts.append("GRS commit pin mismatch")
+    elif grs_status == Status.WARNING.value:
+        summary_parts.append("GRS commit pin could not be read")
+    else:
+        summary_parts.append("GRS commit pin not checked")
 
     remediation = ""
     solutions_url = maker_solutions_url(env_id)
@@ -794,6 +1003,7 @@ def _check_connections_and_refs(runner) -> list[CheckResult]:
         remediation=remediation,
         doc_link=summary_doc_link,
     ))
+    results.append(grs_result)
 
     # --- Detail: orphan references (point to missing connections) ---
     for i, ref in enumerate(orphan_refs):

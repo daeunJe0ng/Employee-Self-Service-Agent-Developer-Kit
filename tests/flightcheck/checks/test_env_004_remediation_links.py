@@ -282,6 +282,20 @@ def _register_components(bot_id: str, payload: dict):
     )
 
 
+def _register_configure(bot_id: str, payload: dict, *, realm: str = mb.MOCK_REALM):
+    responses.add(
+        method="GET",
+        url=f"{mb.MOCK_HOST_TEST_SUFFIX_0}/copilotstudio/minimalBots/alm/{bot_id}/configure",
+        json=payload,
+        status=200,
+        match=[
+            responses.matchers.query_param_matcher(
+                {"realm": realm, "api-version": "2024-10-01"}
+            )
+        ],
+    )
+
+
 def _minimalbots_runner(bot_id: str, fake_token: str, connections: list[dict]):
     runner = _make_runner(connections)
     runner.config = {"agent": {"botId": bot_id}}
@@ -323,6 +337,124 @@ def test_env_004_good_minimalbots_connection_refs_pass(monkeypatch):
 
     assert summary.status == "Passed"
     assert "1 reference(s) used by this agent" in summary.result
+
+
+@responses.activate
+def test_env_004_minimalbots_grs_commit_pin_passes(monkeypatch):
+    from flightcheck.checks import environment as env_mod
+    from flightcheck.checks import _minimalbots_connection_refs as refs_mod
+
+    _register_components(mb.MOCK_GOOD_BOT_ID, mb.component_change_set())
+    _register_configure(mb.MOCK_GOOD_BOT_ID, mb.configure_response())
+    runner = _minimalbots_runner(
+        mb.MOCK_GOOD_BOT_ID,
+        "fake-token",
+        [_conn_c("00000000000000000000000000000000", "shared_workdaysoap")],
+    )
+    runner.config["agent"]["expectedGrsCommitSha"] = mb.MOCK_COMMIT_SHA
+    monkeypatch.setattr(env_mod, "build_agent_ref_scope", lambda runner: _workday_scope())
+    monkeypatch.setattr(
+        env_mod,
+        "read_minimalbots_connection_references",
+        refs_mod.read_minimalbots_connection_references,
+    )
+
+    results = env_mod._check_connections_and_refs(runner)
+
+    summary = next(r for r in results if r.checkpoint_id == "ENV-004")
+    grs = next(r for r in results if r.checkpoint_id == "ENV-004-GRS")
+    assert summary.status == "Passed"
+    assert "GRS commit pin matched" in summary.result
+    assert grs.status == "Passed"
+    assert mb.MOCK_COMMIT_SHA in grs.result
+
+
+@responses.activate
+def test_env_004_minimalbots_grs_commit_pin_mismatch_fails(monkeypatch):
+    from flightcheck.checks import environment as env_mod
+    from flightcheck.checks import _minimalbots_connection_refs as refs_mod
+
+    _register_components(mb.MOCK_GOOD_BOT_ID, mb.component_change_set())
+    _register_configure(mb.MOCK_GOOD_BOT_ID, mb.configure_response())
+    runner = _minimalbots_runner(
+        mb.MOCK_GOOD_BOT_ID,
+        "fake-token",
+        [_conn_c("00000000000000000000000000000000", "shared_workdaysoap")],
+    )
+    runner.config["agent"]["expectedGrsCommitSha"] = "1111111111111111111111111111111111111111"
+    monkeypatch.setattr(env_mod, "build_agent_ref_scope", lambda runner: _workday_scope())
+    monkeypatch.setattr(
+        env_mod,
+        "read_minimalbots_connection_references",
+        refs_mod.read_minimalbots_connection_references,
+    )
+
+    results = env_mod._check_connections_and_refs(runner)
+
+    summary = next(r for r in results if r.checkpoint_id == "ENV-004")
+    grs = next(r for r in results if r.checkpoint_id == "ENV-004-GRS")
+    assert summary.status == "Failed"
+    assert "GRS commit pin mismatch" in summary.result
+    assert grs.status == "Failed"
+    assert "Expected GRS commit SHA" in grs.result
+
+
+@responses.activate
+def test_env_004_minimalbots_grs_commit_pin_skips_without_expected_commit(monkeypatch):
+    from flightcheck.checks import environment as env_mod
+    from flightcheck.checks import _minimalbots_connection_refs as refs_mod
+
+    _register_components(mb.MOCK_GOOD_BOT_ID, mb.component_change_set())
+    runner = _minimalbots_runner(
+        mb.MOCK_GOOD_BOT_ID,
+        "fake-token",
+        [_conn_c("00000000000000000000000000000000", "shared_workdaysoap")],
+    )
+    monkeypatch.setattr(env_mod, "build_agent_ref_scope", lambda runner: _workday_scope())
+    monkeypatch.setattr(
+        env_mod,
+        "read_minimalbots_connection_references",
+        refs_mod.read_minimalbots_connection_references,
+    )
+
+    results = env_mod._check_connections_and_refs(runner)
+
+    summary = next(r for r in results if r.checkpoint_id == "ENV-004")
+    grs = next(r for r in results if r.checkpoint_id == "ENV-004-GRS")
+    assert summary.status == "Passed"
+    assert "GRS commit pin not checked" in summary.result
+    assert grs.status == "Skipped"
+    assert "No expected GRS commit SHA" in grs.result
+
+
+@responses.activate
+def test_env_004_minimalbots_grs_invalid_realm_fails(monkeypatch):
+    from flightcheck.checks import environment as env_mod
+    from flightcheck.checks import _minimalbots_connection_refs as refs_mod
+
+    _register_components(mb.MOCK_GOOD_BOT_ID, mb.component_change_set())
+    runner = _minimalbots_runner(
+        mb.MOCK_GOOD_BOT_ID,
+        "fake-token",
+        [_conn_c("00000000000000000000000000000000", "shared_workdaysoap")],
+    )
+    runner.config["agent"]["expectedGrsCommitSha"] = mb.MOCK_COMMIT_SHA
+    runner.config["agent"]["minimalBotsAlmRealm"] = "bad-realm"
+    monkeypatch.setattr(env_mod, "build_agent_ref_scope", lambda runner: _workday_scope())
+    monkeypatch.setattr(
+        env_mod,
+        "read_minimalbots_connection_references",
+        refs_mod.read_minimalbots_connection_references,
+    )
+
+    results = env_mod._check_connections_and_refs(runner)
+
+    summary = next(r for r in results if r.checkpoint_id == "ENV-004")
+    grs = next(r for r in results if r.checkpoint_id == "ENV-004-GRS")
+    assert summary.status == "Failed"
+    assert "GRS commit pin mismatch" in summary.result
+    assert grs.status == "Failed"
+    assert "bad-realm" in grs.result
 
 
 @responses.activate

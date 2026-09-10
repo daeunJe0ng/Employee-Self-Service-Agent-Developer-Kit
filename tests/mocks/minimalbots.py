@@ -7,6 +7,7 @@ from __future__ import annotations
 
 MOCK_STATUS = "validated"
 MOCK_CASSETTE = "tests/fixtures/cassettes/flightcheck_minimalbots_components.yaml"
+MOCK_ALM_CASSETTE = "tests/fixtures/cassettes/flightcheck_minimalbots_alm.yaml"
 
 MOCK_ENV_ID_TEST_SUFFIX_0 = "5dd45044-46ac-e5c5-ab49-01f33d403cb0"
 MOCK_ENV_ID_TEST_SUFFIX_A = "1cdc648c-c9c2-e85a-958b-b1360a6acdaa"
@@ -14,7 +15,10 @@ MOCK_ENV_ID_PROD = "ecf4737d-bef7-e58a-aa5e-e71a60780efc"
 MOCK_BOT_ID = "11111111-2222-3333-4444-555555555555"
 MOCK_GOOD_BOT_ID = "dad486e8-a0f5-4d64-8774-fe04df05baf5"
 MOCK_BAD_BOT_ID = "a7828f58-bde1-451c-8105-3c2c785cd9e0"
-MOCK_REALM = "contoso"
+MOCK_ALM_BOT_ID = "00000000-0000-0000-0000-000000001111"
+MOCK_REALM = "Dev"
+MOCK_GRS_REPOSITORY_ID = "00000000-0000-0000-0000-000000001111"
+MOCK_COMMIT_SHA = "0b3007b07220fbbea5a7cf7c5a0c4681a247018a"
 MOCK_HOST_TEST_SUFFIX_0 = (
     "https://5dd4504446ace5c5ab4901f33d403cb.0.environment.api.test.powerplatform.com"
 )
@@ -89,24 +93,14 @@ def component_change_set_missing_workday() -> dict:
 
 
 def configure_response() -> dict:
-    """Return a documented AlmReadConfigResult sample.
-
-    Source: ``swagger.json`` schema ``AlmReadConfigResult``. Minimal sample:
-
-    {
-      "realm": "contoso",
-      "cdsBotId": "11111111-2222-3333-4444-555555555555",
-      "schemaName": "cr123_essagent",
-      "grsRepositoryId": "repo-123",
-      "commitSha": "abc123",
-      "values": {"EnvironmentName": "ESS test"}
-    }
-    """
+    """Return the validated minimalBots ALM configure payload."""
     return {
         "realm": MOCK_REALM,
-        "cdsBotId": MOCK_BOT_ID,
-        "schemaName": "cr123_essagent",
-        "grsRepositoryId": "repo-123",
-        "commitSha": "abc123",
-        "values": {"EnvironmentName": "ESS test"},
+        "cdsBotId": MOCK_ALM_BOT_ID,
+        "schemaName": "gptagent_esshr_cosmosda_v2",
+        "grsRepositoryId": MOCK_GRS_REPOSITORY_ID,
+        "commitSha": MOCK_COMMIT_SHA,
+        "values": {"botName": "ESS HR Agent"},
+        "flows": {},
+        "connections": {},
     }
