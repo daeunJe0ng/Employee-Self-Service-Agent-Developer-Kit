@@ -94,10 +94,11 @@ not just the diagnostic fields — run the bundled helper rather than hand-parsi
 it:
 
 ```
-node scripts/transcript-to-json.js "<transcript-path>"
+python scripts/transcript_to_json.py "<transcript-path>"
 ```
 
-(run from the skill directory `tools/ESS-Diagnostics-Skills/`). It writes a
+(On Windows use `python`; on POSIX use `python3`.) Run from the skill directory
+`tools/ESS-Diagnostics-Skills/`. It writes a
 lossless, pretty-printed `<transcript-name>-transcript.json` into the same OS
 temp folder used for the other outputs (see Step 4), annotating each event with
 a `_turn` and `_index` but removing nothing, and prints the absolute output path
@@ -376,7 +377,7 @@ JSON above, which keeps only the diagnostic fields). Produce it with the bundled
 helper introduced in Step 1:
 
 ```
-node scripts/transcript-to-json.js "<transcript-path>"
+python scripts/transcript_to_json.py "<transcript-path>"
 ```
 
 The helper writes this file into the same per-run temp folder and prints its
