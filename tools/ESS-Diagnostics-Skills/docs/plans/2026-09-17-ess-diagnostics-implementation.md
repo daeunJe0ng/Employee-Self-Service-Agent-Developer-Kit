@@ -124,7 +124,7 @@ rationale behind both.
 
 **Files:** none (validation only).
 
-**Step 1:** Follow the revised SKILL.md against `C:\Users\rarame\Downloads\Transcript_a9b8b841-6a4f-4675-9e79-92fc6df74be9.txt`. Confirm:
+**Step 1:** Follow the revised SKILL.md against `C:\path\to\Transcript_a9b8b841-6a4f-4675-9e79-92fc6df74be9.txt`. Confirm:
 - Step 0 hard gate fires (skill asks for the problem before parsing).
 - Parse map extracts the real events: 3 turns; intents `LlmIntentRecognized`; PluginStart queries + `rewrittenMessage`; `verifiedSearchResults` (count 10), `completionState = Answered`.
 - The per-turn structured pause shows intent/search/response + verdict strip + section menu; drill-down shows raw evidence + reasoning; an override is accepted and recorded; `run all` works.
@@ -303,7 +303,7 @@ Expected: no errors (E4/E7/E9/F clean).
 **Step 3: Run against the real transcript**
 
 Run (from `tools/ESS-Diagnostics-Skills`):
-`python scripts/transcript_to_json.py "C:\Users\rarame\Downloads\Transcript_ 4b548465-9be5-4b73-bc96-e3d6bbbe5229.txt"`
+`python scripts/transcript_to_json.py "C:\path\to\Transcript_ 4b548465-9be5-4b73-bc96-e3d6bbbe5229.txt"`
 Expected: prints one absolute path ending in
 `ess-diagnostics\Transcript_ 4b548465-9be5-4b73-bc96-e3d6bbbe5229\Transcript_ 4b548465-9be5-4b73-bc96-e3d6bbbe5229-transcript.json`
 and exits 0.
@@ -313,8 +313,8 @@ and exits 0.
 The JS dump already exists from this session at the same temp path. Regenerate
 it to a side path with the JS helper, then compare:
 ```
-node scripts/transcript-to-json.js "C:\Users\rarame\Downloads\Transcript_ 4b548465-9be5-4b73-bc96-e3d6bbbe5229.txt" /tmp/js-out.json
-python scripts/transcript_to_json.py "C:\Users\rarame\Downloads\Transcript_ 4b548465-9be5-4b73-bc96-e3d6bbbe5229.txt" /tmp/py-out.json
+node scripts/transcript-to-json.js "C:\path\to\Transcript_ 4b548465-9be5-4b73-bc96-e3d6bbbe5229.txt" /tmp/js-out.json
+python scripts/transcript_to_json.py "C:\path\to\Transcript_ 4b548465-9be5-4b73-bc96-e3d6bbbe5229.txt" /tmp/py-out.json
 diff /tmp/js-out.json /tmp/py-out.json && echo "IDENTICAL"
 ```
 Expected: no content diff. On Windows the Python output uses CRLF where JS uses

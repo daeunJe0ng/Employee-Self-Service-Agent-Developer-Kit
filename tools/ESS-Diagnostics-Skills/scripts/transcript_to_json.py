@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """transcript_to_json.py — faithful transcript -> JSON helper for the ESS
 Diagnostics skill.
 
@@ -27,6 +29,7 @@ Prints the absolute output path on success. Exits non-zero with an
 """
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -97,6 +100,7 @@ def main(argv):
     if dot > 0:
         base = base[:dot]
 
+    wrote_to_temp = False
     if len(argv) >= 3 and argv[2]:
         out_file = Path(argv[2])
         try:
@@ -115,6 +119,20 @@ def main(argv):
         except OSError as e:
             fail("could not create output directory " + str(out_dir) + ": " + str(e))
         out_file = out_dir / (base + "-transcript.json")
+        wrote_to_temp = True
+        # Transcripts may contain employee PII and the default temp dir is
+        # world-readable on POSIX. Restrict the per-run folder to the owner
+        # (no-op on Windows, where os.chmod ignores these bits and %TEMP% is
+        # already per-user).
+        if os.name == "posix":
+            try:
+                os.chmod(out_dir, 0o700)
+            except OSError:
+                pass
+
+    # Never overwrite the source transcript, even if it was passed as the output.
+    if out_file.resolve() == src_path.resolve():
+        fail("output path is the same as the transcript; refusing to overwrite it")
 
     try:
         out_file.write_text(
@@ -122,6 +140,13 @@ def main(argv):
         )
     except OSError as e:
         fail("could not write output: " + str(e))
+
+    # Owner-only on the PII-bearing temp output (POSIX; no-op on Windows).
+    if wrote_to_temp and os.name == "posix":
+        try:
+            os.chmod(out_file, 0o600)
+        except OSError:
+            pass
 
     sys.stdout.write(str(out_file.resolve()) + "\n")
 

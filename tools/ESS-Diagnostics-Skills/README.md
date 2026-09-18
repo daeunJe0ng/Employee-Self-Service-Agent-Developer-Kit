@@ -12,7 +12,10 @@ replaces the earlier standalone Python diagnostics tool.
 
 ## How an FDE uses it
 
-Invoke the skill (via its slash/skill mechanism). Before it parses anything, the
+Invoke the skill by pointing Claude at this skill directory (there is no wired
+slash command yet) — for example, ask Claude to "use the ESS diagnostics skill in
+`tools/ESS-Diagnostics-Skills/` on `<path-to-transcript.txt>`", or open
+`SKILL.md` and have Claude follow it. Before it parses anything, the
 skill **stops at a hard gate (Step 0)**: it asks the FDE to confirm the
 transcript **file path** and to state the **specific problem** being
 investigated. It will not proceed without a problem statement — even if one was
@@ -55,17 +58,20 @@ transcript's basename:
 - **Windows:** `%TEMP%\ess-diagnostics\<name>\`
 - **POSIX:** `$TMPDIR` (or `/tmp` when unset) `/ess-diagnostics/<name>/`
 
-Two files are written there:
+Three files are written there:
 
 - **`<name>-debug-report.md`** — the human-readable Debug Report with per-turn
   verdicts, any FDE verdict overrides, the divergence point, and the root cause.
 - **`<name>-normalized.json`** — a clean, normalized parsed transcript artifact
-  containing NO verdicts.
+  containing NO verdicts (only the fields the diagnostic checks use).
+- **`<name>-transcript.json`** — a faithful, lossless JSON copy of the whole
+  transcript (every event and field preserved, `_turn`/`_index` annotated),
+  produced by the bundled helper `scripts/transcript_to_json.py`.
 
 ## Read-only guarantee
 
 The skill never modifies the transcript or any agent files. Its only writes are
-the two output files above, in the OS temp directory — never in the repo.
+the three output files above, in the OS temp directory — never in the repo.
 
 ## Testing / validation
 

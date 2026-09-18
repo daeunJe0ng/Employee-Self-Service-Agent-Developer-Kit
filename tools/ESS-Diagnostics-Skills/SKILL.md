@@ -9,9 +9,10 @@ Python diagnostics tool.
 
 ## Rules
 
-- This skill is **read-only**. The ONLY writes it may make are the two output
-  files: the markdown Debug Report and the normalized-transcript JSON. Never
-  modify the transcript, agent files, or anything else.
+- This skill is **read-only**. The ONLY writes it may make are the three output
+  files written in Step 4: the markdown Debug Report, the normalized-transcript
+  JSON, and the faithful full-transcript JSON. Never modify the transcript, agent
+  files, or anything else.
 - Do NOT narrate your internal process. Say "Let me walk you through this
   transcript" not "Let me read the parse map." Speak directly to the FDE.
 - **Do not proceed past Step 0 until the FDE has stated the problem and you
@@ -266,7 +267,7 @@ outside the repo and must NEVER be committed to source control or shared outside
 approved channels.
 
 Derive the file basename from the transcript's file name — for a transcript
-`foo.txt`, the transcript name is `foo`. Write both files into a per-run
+`foo.txt`, the transcript name is `foo`. Write all three files into a per-run
 subfolder named for the transcript:
 
 - On **Windows**: `%TEMP%\ess-diagnostics\<transcript-name>\`
