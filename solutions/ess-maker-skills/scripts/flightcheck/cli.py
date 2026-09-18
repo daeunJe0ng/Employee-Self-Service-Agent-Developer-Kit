@@ -1078,8 +1078,9 @@ def main():
         config = json.load(f)
 
     infra_only_scope = args.scope == "infrastructure"
+    da_local_scope = args.scope == "local"
     env_url = args.environment_url or config.get("dataverseEndpoint", "")
-    if not env_url and not infra_only_scope:
+    if not env_url and not infra_only_scope and not da_local_scope:
         print("ERROR: No dataverseEndpoint in .local/config.json.")
         sys.exit(1)
 
@@ -1103,12 +1104,25 @@ def main():
         for a in agents:
             marker = "->" if a.get("slug") == active else "  "
             print(f"    {marker} {a.get('name', 'Unknown')}")
-    print(f"  Environment: {env_url}")
+    print(
+        f"  Environment: "
+        f"{env_url or 'AgentBuilder workspace (local files only)'}"
+    )
     print(f"  Scope:       {args.scope}")
     print("=" * 64)
     print()
 
-    if infra_only_scope:
+    if da_local_scope:
+        tenant_id = None
+        dv_token = None
+        graph = None
+        pp_admin = None
+        env_id = config.get("environmentId") or None
+        print(
+            "Skipping Dataverse and remote-service authentication for "
+            "DA local-files scope."
+        )
+    elif infra_only_scope:
         # Infrastructure scope skips auth to stay fast and read-only. The one
         # exception is the INFRA-003 egress probe: when explicitly opted in with
         # --runtime-reachability it needs Dataverse + Power Platform tokens to
@@ -1237,7 +1251,11 @@ def main():
     # Authenticating unconditionally would prompt for a second interactive login
     # on scopes like --scope prerequisites that don't need it.
     pva = None
-    if infra_only_scope:
+    if da_local_scope:
+        print(
+            "Skipping Copilot Studio auth for DA local-files scope."
+        )
+    elif infra_only_scope:
         print("Skipping Copilot Studio auth for infrastructure scope.")
     elif args.scope in PVA_SCOPES:
         print("Authenticating to Copilot Studio (Island Gateway)...")
