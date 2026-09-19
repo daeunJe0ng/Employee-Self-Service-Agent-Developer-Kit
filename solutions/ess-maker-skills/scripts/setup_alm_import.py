@@ -152,8 +152,9 @@ def _operation_identity(
     environment_id: str,
     package: AlmPackageInfo,
     replacement: dict[str, Any] | None,
+    expected_alm_family_id: str | None,
 ) -> dict[str, Any]:
-    return {
+    identity = {
         "environmentId": _normalize_environment_id(environment_id),
         "tenantId": client.tenant_id,
         "host": client.host,
@@ -170,6 +171,9 @@ def _operation_identity(
             replacement["agent"]["schemaName"] if replacement else None
         ),
     }
+    if expected_alm_family_id is not None:
+        identity["expectedAlmFamilyId"] = expected_alm_family_id
+    return identity
 
 
 def _record_path(kit_root: Path, identity: dict[str, Any]) -> Path:
@@ -219,6 +223,162 @@ def _write_record(
     if result is not None:
         record["result"] = result
     _write_json(path, record)
+
+
+def _load_import_records(
+    directory: Path,
+) -> list[tuple[Path, dict[str, Any]]]:
+    records: list[tuple[Path, dict[str, Any]]] = []
+    if not directory.is_dir():
+        return records
+    for path in directory.glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise AlmImportSetupError(
+                "A native ALM import record is unreadable."
+            ) from exc
+        if not isinstance(record, dict) or record.get("schemaVersion") != 1:
+            raise AlmImportSetupError(
+                "A native ALM import record has an unsupported shape."
+            )
+        records.append((path, record))
+    return records
+
+
+def _resume_create_after_cleanup(
+    client: AgentBuilderClient,
+    *,
+    environment_id: str,
+    kit_root: Path,
+    expected_alm_family_id: str,
+) -> dict[str, Any] | None:
+    """Recover the sole imported or verified create after package cleanup."""
+    target = {
+        "environmentId": environment_id,
+        "tenantId": client.tenant_id,
+        "host": client.host,
+        "ring": client.ring,
+        "apiVersion": client.api_version,
+    }
+    match: (
+        tuple[
+            dict[str, Any],
+            Path | None,
+            dict[str, Any] | None,
+            dict[str, str] | None,
+        ]
+        | None
+    ) = None
+    for record_path, record in _load_import_records(
+        kit_root / IMPORT_RECORDS
+    ):
+        identity = record.get("input")
+        status = record.get("status")
+        if (
+            status not in {"imported", "verified"}
+            or not isinstance(identity, dict)
+            or identity.get("mode") != "create"
+            or identity.get("expectedAlmFamilyId")
+            != expected_alm_family_id
+            or any(identity.get(key) != value for key, value in target.items())
+        ):
+            continue
+        if status == "verified":
+            outcome = record.get("outcome")
+            if (
+                not isinstance(outcome, dict)
+                or outcome.get("kind") != "success"
+                or not isinstance(outcome.get("almFamilyId"), str)
+            ):
+                raise AlmImportSetupError(
+                    "The verified native ALM import record is incomplete."
+                )
+            family_id = outcome["almFamilyId"]
+            candidate = (outcome, None, None, None)
+        else:
+            result = record.get("result")
+            imported, reason = _classify_import_outcome(
+                {"responseStatus": "valid", "result": result}
+            )
+            if imported is None:
+                raise AlmImportSetupError(
+                    f"The imported native ALM record is invalid: {reason}."
+                )
+            connection = validate_existing_dev_connection(
+                client,
+                environment_id=environment_id,
+                agent_id=imported["cdsBotId"],
+                selection_source="create-recovery",
+                setup_source="alm-import",
+            )
+            family_id = str(connection["agent"]["almFamilyId"])
+            outcome = _verified_outcome(
+                identity,
+                imported,
+                connection,
+                resumed=True,
+            )
+            candidate = (outcome, record_path, identity, imported)
+        if family_id.casefold() != expected_alm_family_id.casefold():
+            continue
+        if match is not None:
+            raise AlmImportSetupError(
+                "Multiple create imports match this target and ALM family."
+            )
+        match = candidate
+    if match is None:
+        return None
+    outcome, record_path, identity, imported = match
+    if record_path is not None and identity is not None and imported is not None:
+        _persist_dispatched_record(
+            record_path,
+            identity,
+            status="verified",
+            outcome=outcome,
+            result=imported,
+        )
+    return {**outcome, "importStatus": "resumed"}
+
+
+def _requested_create_recovery(
+    client: AgentBuilderClient,
+    *,
+    environment_id: str,
+    kit_root: Path,
+    package_path: Path,
+    expected_alm_family_id: str | None,
+    replacement_agent_id: str | None,
+    confirmed_replacement_agent_id: str | None,
+    retry_safe_failure: bool,
+) -> dict[str, Any]:
+    if (
+        package_path.exists()
+        or replacement_agent_id
+        or confirmed_replacement_agent_id
+        or retry_safe_failure
+    ):
+        raise AlmImportSetupError(
+            "Create recovery applies only after its disposable "
+            "package was removed and cannot replace or retry an import."
+        )
+    if expected_alm_family_id is None:
+        raise AlmImportSetupError(
+            "Create recovery requires the expected ALM-family "
+            "identity from Prod inspection."
+        )
+    resumed = _resume_create_after_cleanup(
+        client,
+        environment_id=environment_id,
+        kit_root=kit_root,
+        expected_alm_family_id=expected_alm_family_id,
+    )
+    if resumed is None:
+        raise AlmImportSetupError(
+            "No imported or verified create matches this target and ALM "
+            "family."
+        )
+    return resumed
 
 
 def _persist_dispatched_record(
@@ -380,6 +540,16 @@ def _verified_outcome(
 ) -> dict[str, Any]:
     agent = connection["agent"]
     environment = connection["environment"]
+    verified_schema = str(agent["schemaName"])
+    if verified_schema.casefold() != result["schemaName"].casefold():
+        raise AlmImportSetupError(
+            "The imported agent schema does not match direct Dev validation."
+        )
+    family_id = str(agent["almFamilyId"]).strip()
+    if not family_id:
+        raise AlmImportSetupError(
+            "Direct Dev validation did not return an ALM-family identity."
+        )
     return {
         "kind": "success",
         "importStatus": "resumed" if resumed else "imported",
@@ -393,6 +563,7 @@ def _verified_outcome(
         "agentId": result["cdsBotId"],
         "schemaName": result["schemaName"],
         "agentName": agent["name"],
+        "almFamilyId": family_id,
         "setupSource": "alm-import",
     }
 
@@ -406,11 +577,29 @@ def import_package_once(
     replacement_agent_id: str | None = None,
     confirmed_replacement_agent_id: str | None = None,
     retry_safe_failure: bool = False,
+    resume_create_after_cleanup: bool = False,
+    expected_alm_family_id: str | None = None,
 ) -> dict[str, Any]:
     """Run or resume one guarded import without materializing a workspace."""
-    package = inspect_alm_package(package_path)
     normalized_environment_id = _normalize_environment_id(environment_id)
     resolved_kit_root = kit_root.resolve()
+    expected_family = (
+        str(expected_alm_family_id or "").strip().casefold() or None
+    )
+    if resume_create_after_cleanup:
+        return _requested_create_recovery(
+            client,
+            environment_id=normalized_environment_id,
+            kit_root=resolved_kit_root,
+            expected_alm_family_id=expected_family,
+            package_path=package_path,
+            replacement_agent_id=replacement_agent_id,
+            confirmed_replacement_agent_id=(
+                confirmed_replacement_agent_id
+            ),
+            retry_safe_failure=retry_safe_failure,
+        )
+    package = inspect_alm_package(package_path)
     replacement: dict[str, Any] | None = None
     if replacement_agent_id:
         normalized_replacement_id = _normalize_guid(
@@ -445,12 +634,17 @@ def import_package_once(
         raise AlmImportSetupError(
             "Replacement confirmation was supplied without a target agent."
         )
+    if replacement is not None and expected_family is not None:
+        raise AlmImportSetupError(
+            "Expected ALM-family validation applies only to create imports."
+        )
 
     identity = _operation_identity(
         client,
         environment_id=normalized_environment_id,
         package=package,
         replacement=replacement,
+        expected_alm_family_id=expected_family,
     )
     record_path = _record_path(resolved_kit_root, identity)
     existing = (
@@ -620,17 +814,29 @@ def import_package_once(
         selection_source="alm-import-result",
         setup_source="alm-import",
     )
-    verified_schema = str(connection["agent"]["schemaName"])
-    if verified_schema.casefold() != imported["schemaName"].casefold():
-        raise AlmImportSetupError(
-            "The imported agent schema does not match direct Dev validation."
-        )
     outcome = _verified_outcome(
         identity,
         imported,
         connection,
         resumed=resumed,
     )
+    if (
+        expected_family is not None
+        and outcome["almFamilyId"].casefold() != expected_family.casefold()
+    ):
+        outcome = _failure_outcome(
+            identity,
+            kind="invalid-success",
+            reason="alm-family-mismatch",
+        )
+        _persist_dispatched_record(
+            record_path,
+            identity,
+            status="invalid-success",
+            outcome=outcome,
+            result=imported,
+        )
+        return outcome
     _persist_dispatched_record(
         record_path,
         identity,
@@ -647,6 +853,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--package", required=True, type=Path)
     parser.add_argument("--replace-agent-id")
     parser.add_argument("--confirm-replace-agent-id")
+    parser.add_argument(
+        "--resume-create-after-cleanup",
+        action="store_true",
+        help=(
+            "Resume the sole imported or verified create for this target and "
+            "ALM family after its disposable package was removed."
+        ),
+    )
+    parser.add_argument("--expected-alm-family-id")
     parser.add_argument(
         "--retry-safe-failure",
         action="store_true",
@@ -684,6 +899,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.confirm_replace_agent_id
             ),
             retry_safe_failure=args.retry_safe_failure,
+            resume_create_after_cleanup=args.resume_create_after_cleanup,
+            expected_alm_family_id=args.expected_alm_family_id,
         )
     except (
         AgentBuilderError,

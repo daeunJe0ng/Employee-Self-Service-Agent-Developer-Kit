@@ -610,6 +610,50 @@ class AgentBuilderClient:
             },
         }
 
+    def export_package(
+        self,
+        agent_id: str,
+        destination: Path,
+        *,
+        timeout: int = 300,
+    ) -> None:
+        """Export one native package to a caller-owned path."""
+        request_headers = {
+            name: value
+            for name, value in self.headers.items()
+            if name.casefold() != "content-type"
+        }
+        response = self.session.request(
+            "POST",
+            f"{self.host}/copilotstudio/minimalBots/alm/{agent_id}/export",
+            params={"api-version": self.api_version},
+            headers=request_headers,
+            timeout=timeout,
+            allow_redirects=False,
+            stream=True,
+        )
+        operation_error: BaseException | None = None
+        try:
+            if not 200 <= response.status_code < 300:
+                _response_error(response, "Native ALM export")
+            with destination.open("wb") as package:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        package.write(chunk)
+        except BaseException as exc:
+            operation_error = exc
+            raise
+        finally:
+            try:
+                response.close()
+            except Exception as close_error:
+                if operation_error is None:
+                    raise
+                operation_error.add_note(
+                    "Native ALM export response cleanup also failed: "
+                    f"{type(close_error).__name__}: {close_error}"
+                )
+
 
 def canonical_json(value: Any) -> str:
     """Serialize API state deterministically for hashes and local evidence."""
