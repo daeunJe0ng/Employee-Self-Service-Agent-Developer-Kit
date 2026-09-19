@@ -15,6 +15,12 @@ _FOUNDATION = _SOLUTION / "src" / "skills" / "foundation-setup" / "SKILL.md"
 _DA_EXISTING_DEV = (
     _SOLUTION / "src" / "skills" / "foundation-setup" / "da-existing-dev.md"
 )
+_DA_ALM_IMPORT = (
+    _SOLUTION / "src" / "skills" / "foundation-setup" / "da-alm-import.md"
+)
+_NATIVE_ALM_REFERENCE = (
+    _SOLUTION / "src" / "reference" / "native-alm-import.md"
+)
 _WORKDAY = _SOLUTION / "src" / "skills" / "setup" / "SKILL.md"
 _CONNECT_STEP1 = _SOLUTION / "src" / "skills" / "connect" / "step1.md"
 _INSTRUCTIONS = _SOLUTION / ".github" / "copilot-instructions.md"
@@ -145,16 +151,67 @@ def test_workday_routing_remains_separate() -> None:
     assert "Do not run the retained Workday setup playbooks" in workday
 
 
-def test_foundation_routes_only_to_existing_dev_da_setup() -> None:
+def test_foundation_routes_supported_da_setup_paths() -> None:
     text = _FOUNDATION.read_text(encoding="utf-8")
+    import_text = _DA_ALM_IMPORT.read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
 
     assert set(_PATH_RE.findall(text)) == {
+        "src/skills/foundation-setup/da-alm-import.md",
         "src/skills/foundation-setup/da-existing-dev.md"
     }
+    assert "not a setup option to advertise or recommend" in normalized
+    assert "src/reference/native-alm-import.md" in import_text
+    assert "DA_ALM_IMPORT_JSON:" in import_text
+    assert "setup_existing_da.py validate-agent" in import_text
+    assert "DA_AGENT_VALIDATION_JSON:" in import_text
+    assert "--setup-source alm-import" in import_text
+    assert "`connectReady: true`" in import_text
+    assert "`setupStatus`" not in import_text
+    assert "`unprojectedDialogCount`" not in import_text
+    assert "Never preselect or recommend **Continue replacement**" in import_text
+    assert "Never remove or edit import records" in import_text
+    reference = _NATIVE_ALM_REFERENCE.read_text(encoding="utf-8")
+    assert "Import `kind: success` is not setup completion" in reference
+    for historical_text in (
+        "## open validation",
+        "the current command",
+        "transport fault-injection",
+        "workstream",
+        "experiment",
+    ):
+        assert historical_text not in reference.casefold()
     assert "scripts/setup_state.py" not in text
     assert "Dataverse foundation or onboarding playbooks" in text
     assert "connector authentication" in text
     assert _DA_EXISTING_DEV.is_file()
+    assert _DA_ALM_IMPORT.is_file()
+    assert _NATIVE_ALM_REFERENCE.is_file()
+
+
+def test_foundation_resolves_python_and_announces_authorization_wait() -> None:
+    text = _FOUNDATION.read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
+
+    assert (
+        "The first terminal operation must change to the kit root" in normalized
+    )
+    assert (
+        "Do not rely on the terminal's inherited working directory" in normalized
+    )
+    assert (
+        "prefix the command with an explicit change to `{KIT_ROOT}`"
+        in normalized
+    )
+    assert "prefer `py -3`" in normalized
+    assert "prefer `python3`" in normalized
+    assert "Do not use a setup command as the launcher probe" in normalized
+    assert "**Waiting for authorization**" in text
+    assert "Complete the Microsoft sign-in in your browser" in normalized
+    assert (
+        "Do not describe an authorization wait as service processing"
+        in normalized
+    )
 
 
 def test_foundation_uses_maker_facing_progress_without_duplicate_state() -> None:
@@ -184,9 +241,46 @@ def test_foundation_has_one_authorization_wait_contract() -> None:
     normalized = " ".join(text.split())
 
     assert "Microsoft sign-in will open" in text
+    assert text.count("Microsoft sign-in will open") == 1
     assert "**Waiting for authorization**" in text
+    assert text.count("**Waiting for authorization**") == 1
     assert "ask the maker to provide a token" in normalized.casefold()
     assert "Do not describe an authorization wait as service processing" in normalized
+
+
+def test_alm_import_uses_shared_progress_and_completion_handoff() -> None:
+    foundation = _FOUNDATION.read_text(encoding="utf-8")
+    text = _DA_ALM_IMPORT.read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
+
+    assert "successful package import with direct Dev validation" in foundation
+    assert "Choose the starting point and target environment" in normalized
+    assert "Verify access and agent identity" in normalized
+    assert "Establish an editable Dev agent" in normalized
+    assert "Agent package imported and verified as an editable Dev agent" in normalized
+    assert "factual completion report from `da-existing-dev.md`" in normalized
+    assert "Supplied native agent package" in text
+    assert "another readiness" not in text.casefold()
+
+
+def test_alm_import_collision_and_retry_require_separate_choices() -> None:
+    text = _DA_ALM_IMPORT.read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
+
+    for choice in (
+        "Use existing agent",
+        "Replace existing agent with this package",
+        "Cancel setup",
+        "Continue replacement",
+        "Retry import",
+        "Stop without retrying",
+    ):
+        assert choice in text
+    assert "Default to **Use existing agent**" in text
+    assert "Never preselect or recommend **Continue replacement**" in text
+    assert "could not be proven" in normalized
+    assert "avoid creating or replacing the agent twice" in normalized
+    assert "only after the maker selects **Retry import**" in normalized
 
 
 def test_existing_da_dev_path_never_routes_through_dataverse() -> None:

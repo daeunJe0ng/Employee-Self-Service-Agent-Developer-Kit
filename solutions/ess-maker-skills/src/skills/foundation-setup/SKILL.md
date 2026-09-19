@@ -44,6 +44,7 @@ The checklist is a view, not another state model:
 
 - a supplied or selected target completes the first stage;
 - direct service validation of an exact editable Dev completes the second and third stages for the existing-agent path;
+- a successful package import with direct Dev validation completes the second and third stages for the supplied-package path;
 - only `connectionStatus: workspace-ready` with `connectReady: true` completes local workspace materialization;
 - reviewing the factual completion report completes the handoff stage in the conversation and does not write another readiness marker.
 
@@ -97,6 +98,8 @@ python scripts/emit_capability.py setup
 ```
 
 Use context already supplied with the setup request. When it identifies an agent, do not ask whether the agent is Dev or Prod; use service inspection to establish its realm.
+
+When the maker has already supplied a native agent package or explicitly asked to use one, read `src/skills/foundation-setup/da-alm-import.md` and follow it. That skill owns the explicit package handoff and reads the canonical import reference. This is an advanced handoff, not a setup option to advertise or recommend.
 
 When the request does not identify an agent or environment, ask:
 

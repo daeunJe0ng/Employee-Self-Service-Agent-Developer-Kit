@@ -786,6 +786,28 @@ def test_identical_rerun_removes_dead_projection_metadata(
     assert "unprojectedDialogs" not in persisted
 
 
+def test_identical_rerun_preserves_alm_import_provenance(
+    tmp_path: Path,
+) -> None:
+    setup_existing_da.attach_existing_dev(
+        FakeClient(),
+        environment_id=ENVIRONMENT_ID,
+        agent_id=AGENT_ID,
+        kit_root=tmp_path,
+        setup_source="alm-import",
+    )
+
+    result = _attach(FakeClient(), tmp_path)
+    state = json.loads(
+        (tmp_path / setup_existing_da.CANONICAL_SETUP_STATE).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result["setupSource"] == "alm-import"
+    assert state["setup_source"] == "alm-import"
+    assert state["setup_source"] == "alm-import"
+
+
 def test_changed_remote_content_requires_explicit_refresh(tmp_path: Path) -> None:
     _attach(FakeClient(), tmp_path)
 
@@ -958,6 +980,45 @@ def test_main_attach_preflights_serializer_before_authentication(
     error = capsys.readouterr().err
     assert "before authentication or remote agent validation" in error
     assert "serializer unavailable" in error
+
+
+def test_main_attach_forwards_alm_import_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+    monkeypatch.setattr(
+        setup_existing_da,
+        "_require_object_model_dependencies",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        setup_existing_da,
+        "_client_from_args",
+        lambda *_args, **_kwargs: FakeClient(),
+    )
+
+    def attach(_client: FakeClient, **kwargs: Any) -> dict[str, Any]:
+        observed.update(kwargs)
+        return {"status": "created"}
+
+    monkeypatch.setattr(setup_existing_da, "attach_existing_dev", attach)
+
+    result = setup_existing_da.main(
+        [
+            "attach",
+            "--target-url",
+            AGENT_URL,
+            "--kit-root",
+            str(tmp_path),
+            "--setup-source",
+            "alm-import",
+        ]
+    )
+
+    assert result == 0
+    assert observed["selection_source"] == "alm-import-result"
+    assert observed["setup_source"] == "alm-import"
 
 
 def test_parser_exposes_only_composable_setup_operations() -> None:

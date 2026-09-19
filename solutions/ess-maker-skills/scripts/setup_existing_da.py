@@ -180,6 +180,23 @@ def _normalize_environment_id(value: str) -> str:
     return _normalize_guid(candidate, "Environment ID")
 
 
+def _validate_setup_source(value: str) -> str:
+    if value not in SUPPORTED_SETUP_SOURCES:
+        raise ExistingDASetupError(
+            f"Unsupported DA setup source: {value!r}."
+        )
+    return value
+
+
+def _preferred_setup_source(existing: str, requested: str) -> str:
+    """Preserve package-import provenance for the same DA identity."""
+    return (
+        "alm-import"
+        if "alm-import" in {existing, requested}
+        else requested
+    )
+
+
 def parse_da_target_url(target_url: str) -> dict[str, str]:
     """Extract recognized ring and resource tokens from supplied text."""
     target = unquote(target_url.strip())
@@ -585,7 +602,9 @@ def _build_canonical_setup_progress(
         "schema_version": CANONICAL_SETUP_SCHEMA_VERSION,
         "intent": SETUP_INTENT,
         "setup_source": (
-            existing["setup_source"] if existing else "existing-dev"
+            existing["setup_source"]
+            if existing
+            else connection["setupSource"]
         ),
         "environment": {
             "id": connection["environment"]["id"],
@@ -823,8 +842,10 @@ def validate_existing_dev_connection(
     environment_id: str,
     agent_id: str,
     selection_source: str | None = None,
+    setup_source: str = "existing-dev",
 ) -> dict[str, Any]:
     """Validate a directly addressable agent as editable Dev identity."""
+    normalized_setup_source = _validate_setup_source(setup_source)
     normalized_environment_id = _normalize_environment_id(environment_id)
     normalized_agent_id = _normalize_guid(agent_id, "Agent ID")
     agent = client.get_agent(normalized_agent_id)
@@ -851,7 +872,7 @@ def validate_existing_dev_connection(
         "stateKind": "da-existing-dev-connection",
         "status": "connected",
         "releaseLine": "da",
-        "setupSource": "existing-dev",
+        "setupSource": normalized_setup_source,
         "environment": {
             "id": normalized_environment_id,
             "tenantId": client.tenant_id,
@@ -1352,6 +1373,7 @@ def attach_existing_dev(
     kit_root: Path,
     refresh: bool = False,
     selection_source: str | None = None,
+    setup_source: str = "existing-dev",
 ) -> dict[str, Any]:
     """Resolve an existing Dev agent and materialize its local DA workspace."""
     connection = validate_existing_dev_connection(
@@ -1359,9 +1381,14 @@ def attach_existing_dev(
         environment_id=environment_id,
         agent_id=agent_id,
         selection_source=selection_source,
+        setup_source=setup_source,
     )
     existing_setup = _validate_setup_target(kit_root, connection)
     if existing_setup is not None:
+        connection["setupSource"] = _preferred_setup_source(
+            _validate_setup_source(str(existing_setup["setup_source"])),
+            connection["setupSource"],
+        )
         connection["agent"]["workspaceSlug"] = existing_setup["agent"][
             "workspace_slug"
         ]
@@ -1445,11 +1472,14 @@ def attach_existing_dev(
                 metadata.get("changesetSha256") != changeset_sha
                 or metadata.get("selectedBy") != connection["selectedBy"]
                 or had_unprojected_dialogs
+                or metadata.get("setupSource")
+                != connection["setupSource"]
             ):
                 metadata = {
                     **metadata,
                     "changesetSha256": changeset_sha,
                     "selectedBy": connection["selectedBy"],
+                    "setupSource": connection["setupSource"],
                 }
                 _write_json(metadata_path, metadata)
             result = {
@@ -1517,7 +1547,7 @@ def attach_existing_dev(
                 "schemaName": schema_name,
                 "realm": "dev",
                 "almFamilyId": family_id,
-                "setupSource": "existing-dev",
+                "setupSource": connection["setupSource"],
                 "selectedBy": connection["selectedBy"],
                 "changesetSha256": changeset_sha,
                 "topicCount": len(topics),
@@ -1778,6 +1808,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Checkpoint and replace a changed existing workspace.",
     )
+    attach.add_argument(
+        "--setup-source",
+        choices=sorted(SUPPORTED_SETUP_SOURCES),
+        default="existing-dev",
+        help=argparse.SUPPRESS,
+    )
     return parser
 
 
@@ -1894,7 +1930,12 @@ def main(argv: list[str] | None = None) -> int:
             agent_id=target["agentId"],
             kit_root=args.kit_root.resolve(),
             refresh=args.refresh,
-            selection_source=target.get("agentSelection"),
+            selection_source=(
+                "alm-import-result"
+                if args.setup_source == "alm-import"
+                else target.get("agentSelection")
+            ),
+            setup_source=args.setup_source,
         )
     except (
         AgentBuilderError,
