@@ -10,6 +10,7 @@ import binascii
 import json
 import os
 import socket
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -151,11 +152,60 @@ def minimal_bot_scope(ring: str) -> str:
     )
 
 
+def minimal_bot_read_scope(ring: str) -> str:
+    """Return the read-only delegated AgentBuilder scope for a supported ring."""
+    config = RING_CONFIG.get(ring)
+    if config is None:
+        raise ValueError(f"Unsupported Power Platform ring: {ring!r}")
+    return f"{config['audience']}/CopilotStudio.MinimalBot.Read"
+
+
+def connectivity_read_scopes(ring: str) -> tuple[str]:
+    """Return the delegated scope for read-only connection inventory."""
+    config = RING_CONFIG.get(ring)
+    if config is None:
+        raise ValueError(f"Unsupported Power Platform ring: {ring!r}")
+    audience = config["audience"]
+    return (f"{audience}/Connectivity.Connections.Read",)
+
+
+def flightcheck_read_scopes(ring: str) -> tuple[str, ...]:
+    """Return the read-only scopes used by native-agent FlightCheck."""
+    return (minimal_bot_read_scope(ring), *connectivity_read_scopes(ring))
+
+
 def _ring_api_host(ring: str) -> str:
     config = RING_CONFIG.get(ring)
     if config is None:
         raise ValueError(f"Unsupported Power Platform ring: {ring!r}")
     return str(config["audience"])
+
+
+def ring_from_environment_host(host: str) -> str:
+    """Return the supported ring identified by an environment API host."""
+    parsed = urlparse(host)
+    hostname = (parsed.hostname or "").casefold()
+    matches = [
+        ring
+        for ring, config in RING_CONFIG.items()
+        if hostname.endswith(f".{str(config['host_suffix']).casefold()}")
+    ]
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or parsed.port not in (None, 443)
+        or parsed.path not in ("", "/")
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or len(matches) != 1
+    ):
+        raise ValueError(
+            "Power Platform API endpoint must be a supported HTTPS "
+            "environment host."
+        )
+    return matches[0]
 
 
 def _validate_environment_continuation(url: str, ring: str) -> str:
@@ -279,6 +329,64 @@ def _load_token_cache(path: Path) -> msal.SerializableTokenCache:
     return cache
 
 
+def _account_identifiers(account: Any) -> list[str]:
+    if not isinstance(account, dict):
+        return []
+    return [
+        str(account[key]).strip()
+        for key in ("username", "local_account_id", "home_account_id")
+        if account.get(key) and str(account[key]).strip()
+    ]
+
+
+def _select_cached_account(
+    accounts: list[dict[str, Any]],
+    account_hint: str | None,
+) -> dict[str, Any] | None:
+    """Select an exact hinted account, or one unambiguous cached account."""
+    if account_hint:
+        wanted = account_hint.strip().casefold()
+        matches = [
+            account
+            for account in accounts
+            if any(
+                identifier.casefold() == wanted
+                for identifier in _account_identifiers(account)
+            )
+        ]
+        if len(matches) > 1:
+            return None
+        return matches[0] if matches else None
+    return accounts[0] if len(accounts) == 1 else None
+
+
+def cached_account_names(
+    cache_path: Path = DEFAULT_TOKEN_CACHE,
+) -> list[str]:
+    """Return distinct cached sign-in names without acquiring a token."""
+    cache = _load_token_cache(cache_path)
+    names: dict[str, str] = {}
+    for account in cache.find(msal.TokenCache.CredentialType.ACCOUNT):
+        username = str(account.get("username") or "").strip()
+        if username:
+            names.setdefault(username.casefold(), username)
+    return sorted(names.values(), key=str.casefold)
+
+
+def _interactive_token(
+    app: msal.PublicClientApplication,
+    scopes: list[str],
+    account_hint: str | None,
+    force_account_selection: bool,
+) -> dict[str, Any] | None:
+    arguments: dict[str, Any] = {"scopes": scopes}
+    if account_hint and not force_account_selection:
+        arguments["login_hint"] = account_hint
+    else:
+        arguments["prompt"] = "select_account"
+    return app.acquire_token_interactive(**arguments)
+
+
 def tenant_id_from_access_token(token: str) -> str:
     """Return the issuing tenant ID from an AgentBuilder access token."""
     try:
@@ -299,37 +407,45 @@ def tenant_id_from_access_token(token: str) -> str:
         ) from exc
 
 
-def authenticate(
-    tenant_id: str,
-    ring: str,
+def _acquire_token(
     *,
-    cache_path: Path = DEFAULT_TOKEN_CACHE,
-    force_account_selection: bool = False,
+    authority: str,
+    ring: str,
+    cache_path: Path,
+    force_account_selection: bool,
+    account_hint: str | None,
+    scopes: tuple[str, ...] | None = None,
 ) -> str:
-    """Acquire an ESS ADK delegated token without contacting Dataverse."""
-    try:
-        normalized_tenant = str(uuid.UUID(tenant_id))
-    except ValueError as exc:
-        raise ValueError("Tenant ID must be a GUID.") from exc
-
     cache = _load_token_cache(cache_path)
-
     app = msal.PublicClientApplication(
         CLIENT_ID,
-        authority=f"https://login.microsoftonline.com/{normalized_tenant}",
+        authority=authority,
         token_cache=cache,
     )
-    scope = minimal_bot_scope(ring)
-    accounts = app.get_accounts()
+    requested_scopes = list(scopes or (minimal_bot_scope(ring),))
+    selected_account = (
+        None
+        if force_account_selection
+        else _select_cached_account(app.get_accounts(), account_hint)
+    )
     result = (
-        app.acquire_token_silent([scope], account=accounts[0])
-        if accounts and not force_account_selection
+        app.acquire_token_silent(requested_scopes, account=selected_account)
+        if selected_account is not None
         else None
     )
+    selected_identifiers = _account_identifiers(selected_account)
+    if selected_identifiers:
+        print(
+            "Using cached AgentBuilder account: "
+            f"{selected_identifiers[0]}",
+            file=sys.stderr,
+        )
     if not result or "access_token" not in result:
-        result = app.acquire_token_interactive(
-            scopes=[scope],
-            prompt="select_account",
+        result = _interactive_token(
+            app,
+            requested_scopes,
+            account_hint,
+            force_account_selection,
         )
     token = result.get("access_token") if result else None
     if not token:
@@ -342,32 +458,70 @@ def authenticate(
     return token
 
 
+def authenticate(
+    tenant_id: str,
+    ring: str,
+    *,
+    cache_path: Path = DEFAULT_TOKEN_CACHE,
+    force_account_selection: bool = False,
+    account_hint: str | None = None,
+) -> str:
+    """Acquire an ESS ADK delegated token without contacting Dataverse."""
+    try:
+        normalized_tenant = str(uuid.UUID(tenant_id))
+    except ValueError as exc:
+        raise ValueError("Tenant ID must be a GUID.") from exc
+
+    return _acquire_token(
+        authority=f"https://login.microsoftonline.com/{normalized_tenant}",
+        ring=ring,
+        cache_path=cache_path,
+        force_account_selection=force_account_selection,
+        account_hint=account_hint,
+    )
+
+
 def authenticate_selected_tenant(
     ring: str,
     *,
     cache_path: Path = DEFAULT_TOKEN_CACHE,
+    force_account_selection: bool = False,
+    account_hint: str | None = None,
 ) -> tuple[str, str]:
-    """Let the maker select an account and return its token and tenant."""
-    cache = _load_token_cache(cache_path)
-    app = msal.PublicClientApplication(
-        CLIENT_ID,
+    """Reuse or select an account and return its token and tenant."""
+    token = _acquire_token(
         authority="https://login.microsoftonline.com/organizations",
-        token_cache=cache,
+        ring=ring,
+        cache_path=cache_path,
+        force_account_selection=force_account_selection,
+        account_hint=account_hint,
     )
-    result = app.acquire_token_interactive(
-        scopes=[minimal_bot_scope(ring)],
-        prompt="select_account",
+    return token, tenant_id_from_access_token(token)
+
+
+def authenticate_flightcheck(
+    ring: str,
+    *,
+    cache_path: Path = DEFAULT_TOKEN_CACHE,
+    force_account_selection: bool = False,
+    account_hint: str | None = None,
+    include_connectivity: bool = True,
+) -> tuple[str, str]:
+    """Acquire one read-only token for native AgentBuilder FlightCheck reads."""
+    scopes = (
+        flightcheck_read_scopes(ring)
+        if include_connectivity
+        else (minimal_bot_read_scope(ring),)
     )
-    token = result.get("access_token") if result else None
-    if not token:
-        error = result.get("error", "unknown_error") if result else "unknown_error"
-        raise AgentBuilderError(
-            f"AgentBuilder authentication failed ({error})."
-        )
-    tenant_id = tenant_id_from_access_token(token)
-    if cache.has_state_changed:
-        _persist_token_cache(cache, cache_path)
-    return token, tenant_id
+    token = _acquire_token(
+        authority="https://login.microsoftonline.com/organizations",
+        ring=ring,
+        cache_path=cache_path,
+        force_account_selection=force_account_selection,
+        account_hint=account_hint,
+        scopes=scopes,
+    )
+    return token, tenant_id_from_access_token(token)
 
 
 def _response_error(response: requests.Response, operation: str) -> None:
@@ -403,6 +557,66 @@ def _response_error(response: requests.Response, operation: str) -> None:
         request_id=request_id,
         response=response,
     )
+
+
+class ConnectivityClient:
+    """Thin client for ring-native Power Platform connection inventory."""
+
+    def __init__(
+        self,
+        token: str,
+        *,
+        ring: str,
+        api_version: str = DEFAULT_API_VERSION,
+        session: requests.Session | None = None,
+    ) -> None:
+        self.host = _ring_api_host(ring)
+        self.ring = ring
+        self.api_version = api_version
+        self.session = session or requests.Session()
+        retry = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"}),
+            respect_retry_after_header=True,
+        )
+        self.session.mount("https://", HTTPAdapter(max_retries=retry))
+        self.headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "x-ms-client-name": "EssAdk",
+        }
+
+    def list_connections(self, environment_id: str) -> list[dict[str, Any]]:
+        """List physical connections visible to the signed-in maker."""
+        normalized_environment_id = str(uuid.UUID(environment_id))
+        response = self.session.request(
+            "GET",
+            (
+                f"{self.host}/connectivity/environments/"
+                f"{normalized_environment_id}/connections"
+            ),
+            params={"api-version": self.api_version},
+            headers=self.headers,
+            timeout=120,
+        )
+        if not response.ok:
+            _response_error(response, "Connection listing")
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise AgentBuilderError(
+                "Connection listing returned a non-JSON response."
+            ) from exc
+        values = body.get("value") if isinstance(body, dict) else None
+        if not isinstance(values, list) or not all(
+            isinstance(value, dict) for value in values
+        ):
+            raise AgentBuilderError(
+                "Connection listing returned an invalid shape."
+            )
+        return values
 
 
 class AgentBuilderClient:
@@ -485,6 +699,60 @@ class AgentBuilderClient:
             raise AgentBuilderError("Agent listing returned an invalid shape.")
         return body
 
+    def list_starter_packages(
+        self,
+        *,
+        page_size: int = 200,
+        max_pages: int = 20,
+    ) -> list[dict[str, Any]]:
+        """List AgentBuilder starter packages entitled to this identity.
+
+        Read-only and safe to call before any maker confirmation; it never
+        mutates the target environment. Live-proven GET route. Uses the
+        client's normal idempotent-GET retry policy; this method adds only
+        bounded pagination and strict response-shape validation on top of
+        it.
+        """
+        if page_size <= 0:
+            raise ValueError("Page size must be a positive integer.")
+        if max_pages <= 0:
+            raise ValueError("Max pages must be a positive integer.")
+        packages: list[dict[str, Any]] = []
+        continuation: str | None = None
+        for _page in range(max_pages):
+            params: dict[str, Any] = {"pageSize": page_size}
+            if continuation:
+                params["continuationToken"] = continuation
+            body = self._json(
+                "GET",
+                "/copilotstudio/minimalBots/agentStarterPackages",
+                "Starter package listing",
+                params=params,
+            )
+            if not isinstance(body, dict):
+                raise AgentBuilderError(
+                    "Starter package listing returned an invalid shape."
+                )
+            page_packages = body.get("packages")
+            if not isinstance(page_packages, list) or not all(
+                isinstance(item, dict) for item in page_packages
+            ):
+                raise AgentBuilderError(
+                    "Starter package listing returned an invalid shape."
+                )
+            packages.extend(page_packages)
+            continuation = body.get("continuationToken")
+            if not continuation:
+                return packages
+            if not isinstance(continuation, str):
+                raise AgentBuilderError(
+                    "Starter package listing returned an invalid "
+                    "continuation token."
+                )
+        raise AgentBuilderError(
+            f"Starter package listing exceeded {max_pages} pages."
+        )
+
     def get_agent(self, agent_id: str) -> dict[str, Any]:
         body = self._json(
             "GET",
@@ -493,6 +761,40 @@ class AgentBuilderClient:
         )
         if not isinstance(body, dict):
             raise AgentBuilderError("Direct agent lookup returned an invalid shape.")
+        return body
+
+    def publish_agent(
+        self,
+        agent_id: str,
+        *,
+        timeout: int = 300,
+    ) -> dict[str, Any]:
+        """Publish one native agent through the MinimalBot API."""
+        response = self.session.request(
+            "POST",
+            f"{self.host}/copilotstudio/minimalBots/api/{agent_id}/publish",
+            params={"api-version": self.api_version},
+            headers=self.headers,
+            json={},
+            timeout=timeout,
+            allow_redirects=False,
+        )
+        if not response.ok:
+            _response_error(response, "Native agent publish")
+        try:
+            body = response.json()
+        except ValueError:
+            if response.content:
+                raise AgentBuilderError(
+                    "Native agent publish returned a non-JSON response."
+                )
+            return {}
+        if body is None:
+            return {}
+        if not isinstance(body, dict):
+            raise AgentBuilderError(
+                "Native agent publish returned an invalid shape."
+            )
         return body
 
     def get_realms(self, agent_id: str) -> dict[str, Any]:
@@ -539,6 +841,26 @@ class AgentBuilderClient:
         if not isinstance(body, dict):
             raise AgentBuilderError("Component fetch returned an invalid shape.")
         return body
+
+    def update_bot_entity(
+        self,
+        agent_id: str,
+        bot: dict[str, Any],
+        *,
+        timeout: int = 300,
+    ) -> requests.Response:
+        """Replace one fetched BotEntity without changing bot components."""
+        if not isinstance(bot, dict):
+            raise ValueError("BotEntity must be an object.")
+        return self.session.request(
+            "PUT",
+            f"{self.host}/copilotstudio/minimalBots/api/{agent_id}/components",
+            params={"api-version": self.api_version},
+            headers=self.headers,
+            json={"bot": bot, "botComponentChanges": []},
+            timeout=timeout,
+            allow_redirects=False,
+        )
 
     def import_package(
         self,
@@ -653,6 +975,43 @@ class AgentBuilderClient:
                     "Native ALM export response cleanup also failed: "
                     f"{type(close_error).__name__}: {close_error}"
                 )
+
+    def create_agent_from_starter_package(
+        self,
+        package_id: str,
+        *,
+        timeout: int = 300,
+    ) -> requests.Response:
+        """Dispatch one create-only MOS starter package request.
+
+        The live-proven request is
+        ``POST /minimalBots/createFromStarterPackage`` with the exact package
+        ID in ``{"packageId": ...}``. The service returns HTTP 201 with the
+        new ``botId`` and ``sourcePackage`` identity.
+
+        Create-only: the caller supplies the exact maker-confirmed package
+        ID and this method never supplies a replacement schema or targets
+        an existing agent. Redirects are disabled and this POST is
+        intentionally excluded from the session's retry policy (mounted for
+        GET/HEAD/OPTIONS only), so a mutation is never replayed
+        automatically by the transport.
+
+        Returns the raw response instead of raising on a non-2xx status or
+        parsing its body: the caller owns near-verbatim, redacted evidence
+        rendering and the attempt-fuse disposition, and must not lose
+        response detail to a discarded exception.
+        """
+        if not isinstance(package_id, str) or not package_id.strip():
+            raise ValueError("Starter package ID must be a non-empty string.")
+        return self.session.request(
+            "POST",
+            f"{self.host}/copilotstudio/minimalBots/createFromStarterPackage",
+            params={"api-version": self.api_version},
+            headers=self.headers,
+            json={"packageId": package_id},
+            timeout=timeout,
+            allow_redirects=False,
+        )
 
 
 def canonical_json(value: Any) -> str:

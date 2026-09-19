@@ -4,19 +4,26 @@
 
 Connect this ADK workspace to an existing editable DA Dev agent. Do not run the Dataverse setup path, request a Dataverse URL, create a preferred solution, or start Dataverse MCP.
 
-Use one Power Platform environment and one active platform per ADK workspace. If setup already identifies another platform, environment, or agent, direct the maker to a separate workspace.
+Use one Power Platform environment per ADK workspace. The workspace can contain multiple Dev agents from that environment and has one active agent. A target in another environment uses **Create and open a new workspace** from the parent skill.
 
 ## Connect from the agent URL
 
-Ask for the URL of the agent in Copilot Studio. A complete agent URL is preferred because it identifies the environment and agent without tenant-wide inventory.
+Ask for the URL of the agent in Copilot Studio only when the parent setup router has neither a current-invocation inspection result nor a complete recorded local target. A complete agent URL is preferred for a new target because it identifies the environment and agent without tenant-wide inventory. Never request a URL merely to revalidate the exact agent already recorded for this workspace.
+
+Infer the environment ID, agent ID, and service ring from the URL. The URL
+should have a segment denoting the ring, such as `test` or `preprod`; when
+neither segment is present, confirm the `prod` ring with the user. Ask only
+when the environment ID or agent ID is unclear.
 
 Use a current-invocation `DA_AGENT_ROUTE_JSON:` result when the parent setup
-router already inspected the supplied agent. Otherwise, use the shared
-authorization message from `SKILL.md`, then inspect the agent before attachment:
+router already inspected the supplied or recorded agent. Otherwise, use the
+shared authorization message from `SKILL.md`, then run:
 
 ```text
 python scripts/setup_existing_da.py inspect-agent \
-  --target-url "{COPILOT_STUDIO_AGENT_URL}"
+  --environment-id "{ENVIRONMENT_ID}" \
+  --agent-id "{AGENT_ID}" \
+  --ring "{RING}"
 ```
 
 Parse `DA_AGENT_ROUTE_JSON:`. Continue only when the current invocation has a
@@ -33,14 +40,17 @@ Run:
 
 ```text
 python scripts/setup_existing_da.py attach \
-  --target-url "{COPILOT_STUDIO_AGENT_URL}"
+  --environment-id "{ENVIRONMENT_ID}" \
+  --tenant-id "{TENANT_ID}" \
+  --host "{VALIDATED_HOST}" \
+  --ring "{RING}" \
+  --api-version "{API_VERSION}" \
+  --agent-id "{AGENT_ID}"
 ```
 
-The access token supplies the tenant identity; do not infer it from the environment ID.
+The access token supplies the tenant identity during initial inspection; do not infer it from the environment ID.
 
-Recognized Copilot Studio hostnames select `prod`, `preprod`, or `test`. Other target text defaults to `prod`; use an explicit non-production `--ring` only when the supplied target does not identify its ring.
-
-The command validates the exact agent identity and Dev configuration, fetches the authoritative component change set, converts supported authoring components with the Microsoft Object Model serializer, and materializes the local workspace. It persists canonical setup progress with an atomic file write before materialization and records `connect_ready: true` only after the workspace and operational configuration are complete.
+The command validates the exact agent identity and Dev configuration, fetches the authoritative component change set, converts supported authoring components with the Microsoft Object Model serializer, and materializes the local workspace. It persists canonical setup progress for that agent before materialization. Complete the native FlightCheck maintenance below before treating the agent's `connect_ready: true` as current.
 
 If Object Model dependencies are missing, run:
 
@@ -56,10 +66,14 @@ Use these independent read-only operations when setup needs to classify, select,
 
 ```text
 python scripts/setup_existing_da.py inspect-agent \
-  --target-url "{COPILOT_STUDIO_AGENT_URL}"
+  --environment-id "{ENVIRONMENT_ID}" \
+  --agent-id "{AGENT_ID}" \
+  --ring "{RING}"
 
 python scripts/setup_existing_da.py validate-agent \
-  --target-url "{COPILOT_STUDIO_AGENT_URL}"
+  --environment-id "{ENVIRONMENT_ID}" \
+  --agent-id "{AGENT_ID}" \
+  --ring "{RING}"
 ```
 
 `inspect-agent` returns the service-owned route realm. `validate-agent` verifies one exact editable Dev agent without writing setup state or workspace files. Do not run `validate-agent` immediately before `attach` merely to create another visible step; `attach` performs its own exact validation.
@@ -68,18 +82,59 @@ If the maker provides an environment URL without an agent ID, list visible Dev-r
 
 ```text
 python scripts/setup_existing_da.py list-agents \
-  --target-url "{COPILOT_STUDIO_ENVIRONMENT_URL}"
+  --environment-id "{ENVIRONMENT_ID}" \
+  --ring "{RING}"
 ```
 
 Show candidate display names and ask the maker to choose one. Validate only the selected candidate through `validate-agent` or `attach`. A missing list entry is not proof that a directly addressable agent is absent; accept a known agent ID and validate it directly.
 
+## Maintain native FlightCheck evidence
+
+After every successful `attach` or unchanged existing-workspace resume, run all four setup-owned FlightChecks for the exact agent.
+
+Run each checkpoint into its dedicated local evidence folder:
+
+```text
+python scripts/flightcheck/cli.py --checkpoint DA-AGENT-001 --quiet-auth --no-open --output .local/setup/agents/{AGENT_ID}/flightcheck/DA-AGENT-001
+python scripts/flightcheck/cli.py --checkpoint ENV-CAPACITY-001 --quiet-auth --no-open --output .local/setup/agents/{AGENT_ID}/flightcheck/ENV-CAPACITY-001
+python scripts/flightcheck/cli.py --checkpoint "DA-CONN-*" --quiet-auth --no-open --output .local/setup/agents/{AGENT_ID}/flightcheck/DA-CONN
+python scripts/flightcheck/cli.py --checkpoint DA-CONTENT-001 --quiet-auth --no-open --output .local/setup/agents/{AGENT_ID}/flightcheck/DA-CONTENT-001
+```
+
+After each run, even when that FlightCheck exits nonzero, apply its result to canonical setup state:
+
+```text
+python scripts/setup_existing_da.py maintain-flightcheck --agent-id "{AGENT_ID}" --checkpoint DA-AGENT-001 --results .local/setup/agents/{AGENT_ID}/flightcheck/DA-AGENT-001/results.json
+python scripts/setup_existing_da.py maintain-flightcheck --agent-id "{AGENT_ID}" --checkpoint ENV-CAPACITY-001 --results .local/setup/agents/{AGENT_ID}/flightcheck/ENV-CAPACITY-001/results.json
+python scripts/setup_existing_da.py maintain-flightcheck --agent-id "{AGENT_ID}" --checkpoint "DA-CONN-*" --results .local/setup/agents/{AGENT_ID}/flightcheck/DA-CONN/results.json
+python scripts/setup_existing_da.py maintain-flightcheck --agent-id "{AGENT_ID}" --checkpoint DA-CONTENT-001 --results .local/setup/agents/{AGENT_ID}/flightcheck/DA-CONTENT-001/results.json
+```
+
+Parse every `DA_SETUP_FLIGHTCHECK_JSON:` result. Its `state`, `connectReady`, `activeStep`, and `failureCauses` are the setup verdict. Render the owning setup stage from that verdict and use the matching FlightCheck rows for maker-facing evidence and remediation.
+
+For `DA-CONN-*`, setup applies these outcomes:
+
+- `Passed` and `Warning` evidence completes connection readiness. Include the warning disclaimer when exact logical-to-physical mapping is unavailable.
+- `Skipped` completes connection readiness when the agent declares no native logical connection references.
+- `NotConfigured` keeps connection readiness blocked. Present **Connection required** and the action needed to create or expose a matching physical connection.
+- `Failed` keeps connection readiness blocked. Present **Connection needs attention** and the observed unhealthy connection state.
+- `Error` keeps connection readiness blocked. Present **Connection check unavailable** and the authentication, permission, or service remediation.
+
+`ENV-CAPACITY-001` remains a programmatic gate. Non-queryable governance prerequisites are outside this read-only check; disclose that limitation without treating it as a setup policy or a downstream `/connect` deferral.
+
 ## Interpret results
 
-Treat setup as complete only when `DA_EXISTING_DEV_SETUP_JSON:` reports both `connectionStatus: workspace-ready` and `connectReady: true`.
+Canonical setup state is authoritative for each agent's setup progress and completion. Setup for the active agent is complete when attachment reports `connectionStatus: workspace-ready`, every step in that agent's canonical record is `done`, and the final `DA_SETUP_FLIGHTCHECK_JSON:` reports `connectReady: true`.
 
-Canonical state tracks eight foundation records. Checks outside DA foundation setup are recorded with `mode: "skipped"` and a specific reason. Treat those records as explicit waivers, not evidence that a check ran. Preferred-solution configuration does not apply to the DA-only path. Environment FlightCheck, product installation, binding, and product-readiness evidence belong to their owning product setup capabilities.
+Canonical state records native environment access, capacity, binding readiness, and baseline content readiness as automated FlightCheck evidence. Only preferred-solution configuration remains skipped because it does not apply to the DA-only path.
 
-If setup stops after canonical progress is written, inspect `active_step`, that step's state, and its `failure_causes`. Preserve those facts in the response and rerun only the bounded operation selected by the maker. Do not edit canonical setup state by hand or claim readiness while `connect_ready` is false.
+When canonical setup state is incomplete, render the stage identified by `active_step` with its state and `failure_causes`. Translate `SETUP-03` to **Establish an editable Dev agent** and `SETUP-07` to **Materialize the local workspace**. Explain the unmet prerequisite in maker language and offer the bounded remediation for that evidence.
+
+If content was synced to the local workspace but the returned result is not workspace-ready and supplies no specific failure cause, keep **Materialize the local workspace** current and show:
+
+> The agent content was synced to your local workspace, but the workspace is not ready to connect. Setup is not complete and has stopped.
+
+Do not invent a cause or run another operation without new maker intent.
 
 On success, build this report only from `DA_EXISTING_DEV_SETUP_JSON:`. Use a friendly environment name only when an authoritative operation returned one; otherwise say `Selected Power Platform environment`. Render empty `unprojectedComponentKinds` as `None` and a missing checkpoint as `Not required`.
 
@@ -93,8 +148,8 @@ Your ESS agent workspace is ready.
 | Starting point             | Existing editable Dev                                                  |
 | Target environment         | **{friendly environment name or Selected Power Platform environment}** |
 | Local workspace            | `{workspace folder}`                                                   |
-| Topics projected           | {topic count}                                                          |
-| Global variables projected | {variable count}                                                       |
+| Topics synced              | {topic count}                                                          |
+| Global variables synced    | {variable count}                                                       |
 | Other retained components  | {unprojected component summary or None}                                |
 | Local checkpoint           | {checkpoint number or Not required}                                    |
 
@@ -107,9 +162,9 @@ Not performed by foundation setup:
 
 **End message.**
 
-This report is a factual handoff, not another readiness gate. If the maker disputes a fact, inspect the underlying operation evidence rather than changing canonical state conversationally.
+This report is a factual handoff, not another readiness gate. If the maker disputes a fact, inspect the underlying operation evidence rather than changing canonical state conversationally. Then present the shared completion choices from `SKILL.md`.
 
-Preserve service status, error code, request ID, and local projection-failure evidence. Do not replace a specific service or conversion failure with a generic setup error.
+Preserve service status, error code, request ID, and local projection-failure evidence for diagnosis. In ordinary maker-facing copy, explain the specific service or conversion failure in plain language without exposing raw technical output. Do not replace it with a generic setup error.
 
 For an identity or authorization failure, rerun the same operation with `--select-account`. Use `--tenant-id` only when the maker supplies the tenant that owns the target and understands that tenant selection does not grant access.
 
@@ -130,7 +185,12 @@ Continue only after the maker explicitly selects **Checkpoint and refresh**:
 
 ```text
 python scripts/setup_existing_da.py attach \
-  --target-url "{COPILOT_STUDIO_AGENT_URL}" \
+  --environment-id "{ENVIRONMENT_ID}" \
+  --tenant-id "{TENANT_ID}" \
+  --host "{VALIDATED_HOST}" \
+  --ring "{RING}" \
+  --api-version "{API_VERSION}" \
+  --agent-id "{AGENT_ID}" \
   --refresh
 ```
 

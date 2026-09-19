@@ -6,10 +6,31 @@ description: "Type Enter to set up your ESS customization environment"
 # Setup
 
 Read `src/skills/foundation-setup/SKILL.md` first. Follow its **Command runtime**
-instructions to change to the kit root and resolve one working Python launcher
-before running any Python command. A failed launcher candidate is discovery
-evidence, not a setup failure; continue through the documented fallbacks and
-stop only if none works.
+instructions to establish a working Python invocation before running any Python
+command.
+
+After reading the foundation skill, write the complete maker-facing progress
+checklist below. At the beginning of every subsequent setup turn, write the
+same complete checklist again using the latest canonical setup state and
+results observed in that invocation. Use the exact ordinary Markdown shape
+defined in the foundation skill: one single-level bullet and one leading
+status emoji per stage.
+
+- {marker} Choose the starting point and target environment
+- {marker} Verify access and agent identity
+- {marker} Establish an editable Dev agent
+- {marker} Materialize the local workspace
+- {marker} Review the setup handoff
+
+Use ✅ for completed, 🔄 for the current stage, ⛔ for a blocked stage, and ⬜
+for pending. Every update is a full snapshot containing all five stages in this
+order. After each setup action that changes progress, write the complete
+snapshot with the updated statuses. Preserve completed stages, keep pending
+stages present, and represent subordinate checks through the status of their
+owning stage. Before every maker-facing response, including the final handoff,
+synchronize the complete snapshot once more.
+
+Run setup commands from the current ESS Maker Skills workspace folder.
 
 Using the resolved launcher in place of `{PYTHON}`, run this command without
 showing it to the user:
@@ -18,9 +39,24 @@ showing it to the user:
 {PYTHON} -m pip install -r scripts/requirements.txt
 ```
 
-If the launcher cannot start Python, return to launcher discovery and try the
-remaining candidates. If the verified interpreter runs but dependency
-installation fails, show the exact error and stop.
+Check the Microsoft Object Model converter dependencies:
+
+```powershell
+{PYTHON} -c "import sys;
+sys.path.insert(0, 'scripts');
+import agentbuilder_object_model as m;
+m.validate_object_model_runtime()"
+```
+
+If the check fails, run:
+
+```powershell
+{PYTHON} scripts/install_agentbuilder_object_model.py
+```
+
+Then rerun the check.
+
+For any command failure, follow the **Command runtime** recovery guidance.
 
 Do not route to Dataverse foundation or onboarding playbooks.
 Foundation setup owns DA-GA environment and editable Dev-agent selection,

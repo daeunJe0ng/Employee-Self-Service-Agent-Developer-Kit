@@ -18,7 +18,8 @@ When a matching import record reports `kind: success`, or reports that the servi
 
 ```text
 python scripts/setup_alm_import.py \
-  --target-url "{TARGET_ENVIRONMENT_URL}" \
+  --environment-id "{TARGET_ENVIRONMENT_ID}" \
+  --ring "{TARGET_RING}" \
   --tenant-id "{SOURCE_TENANT_ID}" \
   --package "{FORMER_TEMPORARY_PACKAGE_PATH}" \
   --resume-create-after-cleanup \
@@ -44,7 +45,9 @@ from `SKILL.md`. Run:
 
 ```text
 python scripts/setup_alm_export.py inspect \
-  --source-url "{SOURCE_PROD_AGENT_URL}"
+  --environment-id "{SOURCE_ENVIRONMENT_ID}" \
+  --agent-id "{SOURCE_AGENT_ID}" \
+  --ring "{SOURCE_RING}"
 ```
 
 Parse `DA_ALM_EXPORT_INSPECTION_JSON:`. The command must validate native Prod
@@ -81,12 +84,14 @@ Continue here only when no directly validated related Dev exists. Keep **Establi
 > No related editable Dev agent was found. Setup can create one from the
 > verified Prod agent without changing Prod.
 
-Use the same Power Platform environment as the supplied Prod agent. If the maker explicitly requests another environment, ask for its Copilot Studio environment URL instead. Then run:
+Use the same Power Platform environment as the supplied Prod agent. If the maker explicitly requests another environment, ask for its environment URL and infer its environment ID and service ring. The URL should have a segment denoting the ring, such as `test` or `preprod`; when neither segment is present, confirm the `prod` ring with the user. Ask only when the environment ID is unclear. Then run:
 
 ```text
 python scripts/setup_alm_export.py export \
-  --source-url "{SOURCE_PROD_AGENT_URL}" \
-  --tenant-id "{SOURCE_TENANT_ID}"
+  --environment-id "{SOURCE_ENVIRONMENT_ID}" \
+  --agent-id "{SOURCE_AGENT_ID}" \
+  --tenant-id "{SOURCE_TENANT_ID}" \
+  --ring "{SOURCE_RING}"
 ```
 
 If the maker cancels after export, run `setup_alm_export.py cleanup`. A later
@@ -112,7 +117,8 @@ When the maker explicitly selected another environment, use its friendly display
 
 ```text
 python scripts/setup_alm_import.py \
-  --target-url "{SOURCE_PROD_AGENT_URL_OR_EXPLICIT_TARGET_ENVIRONMENT_URL}" \
+  --environment-id "{TARGET_ENVIRONMENT_ID}" \
+  --ring "{TARGET_RING}" \
   --tenant-id "{SOURCE_TENANT_ID}" \
   --package "{TEMPORARY_PACKAGE_PATH}" \
   --expected-alm-family-id "{SOURCE_ALM_FAMILY_ID}"
@@ -130,14 +136,7 @@ If cleanup fails, report the local cleanup error and stop; the durable import
 result remains the primary operation evidence and can be resumed after cleanup
 succeeds.
 
-When import returns `kind: conflict`, rerun the read-only source inspection to
-refresh `/realms`:
-
-```text
-python scripts/setup_alm_export.py inspect \
-  --source-url "{SOURCE_PROD_AGENT_URL}" \
-  --tenant-id "{SOURCE_TENANT_ID}"
-```
+When import returns `kind: conflict`, rerun the read-only source inspection command above with the same source values to refresh `/realms`.
 
 If the refreshed result contains a related Dev, validate that exact agent with
 `setup_existing_da.py validate-agent` as in [Inspect the source](#inspect-the-source).
@@ -173,4 +172,4 @@ python scripts/setup_existing_da.py attach \
   --setup-source prod-to-dev
 ```
 
-Complete setup through the factual report in `da-existing-dev.md`. Use **Existing Prod agent; related Dev reused** as the starting point for a validated related-Dev path and **Existing Prod agent; new Dev created** after a successful create-only import. Do not claim Prod changed, Dev was published, or promotion was configured. Do not add cross-tenant support, replacement, collision recovery, export receipts, or telemetry.
+When attachment reports `connectionStatus: workspace-ready`, run the native FlightCheck maintenance sequence in `da-existing-dev.md`. Complete setup only after its final `DA_SETUP_FLIGHTCHECK_JSON:` reports `connectReady: true`, then use the factual report there. Use **Existing Prod agent; related Dev reused** as the starting point for a validated related-Dev path and **Existing Prod agent; new Dev created** after a successful create-only import. Do not claim Prod changed, Dev was published, or promotion was configured. Do not add cross-tenant support, replacement, collision recovery, export receipts, or telemetry.

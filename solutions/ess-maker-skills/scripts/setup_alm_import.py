@@ -8,7 +8,6 @@ import argparse
 import hashlib
 import json
 import socket
-import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -33,6 +32,8 @@ from setup_existing_da import (
     _load_canonical_setup_state,
     _normalize_environment_id,
     _normalize_guid,
+    _print_exception,
+    _print_http_error_response,
     _utc_now,
     _write_json,
     resolve_da_target,
@@ -409,6 +410,14 @@ def _persist_dispatched_record(
                 "Primary operation evidence: "
                 f"{type(operation_error).__name__}: {operation_error}"
             )
+            if (
+                isinstance(operation_error, AgentBuilderHTTPError)
+                and operation_error.response is not None
+            ):
+                error.add_note(
+                    "Primary operation response body: "
+                    f"{operation_error.response.text}"
+                )
         raise error from persistence_error
 
 
@@ -435,17 +444,33 @@ def _validate_local_replacement_target(
         return
     try:
         state_environment = state["environment"]["id"]
-        state_agent = state["agent"]["id"]
+        agents = state["agents"]
     except (KeyError, TypeError) as exc:
         raise AlmImportSetupError(
             "The existing DA setup state is unreadable."
         ) from exc
-    if (
-        str(state_environment).casefold() != environment_id.casefold()
-        or str(state_agent).casefold() != agent_id.casefold()
-    ):
+    if not isinstance(agents, dict):
+        raise AlmImportSetupError(
+            "The existing DA setup state is unreadable."
+        )
+    state_agent = agents.get(agent_id)
+    if str(state_environment).casefold() != environment_id.casefold():
         raise AlmImportSetupError(
             "This workspace is connected to a different editable Dev agent."
+        )
+    if not isinstance(state_agent, dict):
+        raise AlmImportSetupError(
+            "The replacement agent is not configured in this workspace."
+        )
+    try:
+        state_agent_id = state_agent["agent"]["id"]
+    except (KeyError, TypeError) as exc:
+        raise AlmImportSetupError(
+            "The existing DA setup state is unreadable."
+        ) from exc
+    if str(state_agent_id).casefold() != agent_id.casefold():
+        raise AlmImportSetupError(
+            "The existing DA setup state is unreadable."
         )
 
 
@@ -528,6 +553,11 @@ def _failure_outcome(
     if error is not None:
         outcome["errorType"] = type(error).__name__
         outcome["errorMessage"] = str(error)
+        if (
+            isinstance(error, AgentBuilderHTTPError)
+            and error.response is not None
+        ):
+            outcome["responseBody"] = error.response.text
     return outcome
 
 
@@ -545,12 +575,8 @@ def _verified_outcome(
         raise AlmImportSetupError(
             "The imported agent schema does not match direct Dev validation."
         )
-    family_id = str(agent["almFamilyId"]).strip()
-    if not family_id:
-        raise AlmImportSetupError(
-            "Direct Dev validation did not return an ALM-family identity."
-        )
-    return {
+    family_id = str(agent.get("almFamilyId") or "").strip() or None
+    outcome = {
         "kind": "success",
         "importStatus": "resumed" if resumed else "imported",
         "importMode": identity["mode"],
@@ -563,9 +589,49 @@ def _verified_outcome(
         "agentId": result["cdsBotId"],
         "schemaName": result["schemaName"],
         "agentName": agent["name"],
-        "almFamilyId": family_id,
         "setupSource": "alm-import",
     }
+    if family_id:
+        outcome["almFamilyId"] = family_id
+    return outcome
+
+
+def _verification_unavailable_outcome(
+    identity: dict[str, Any],
+    result: dict[str, str],
+    error: BaseException,
+    *,
+    resumed: bool,
+) -> dict[str, Any]:
+    outcome = _failure_outcome(
+        identity,
+        kind="imported-unverified",
+        status_code=(
+            error.status_code
+            if isinstance(error, AgentBuilderHTTPError)
+            else None
+        ),
+        error_code=(
+            error.error_code
+            if isinstance(error, AgentBuilderHTTPError)
+            else None
+        ),
+        request_id=(
+            error.request_id
+            if isinstance(error, AgentBuilderHTTPError)
+            else None
+        ),
+        reason="direct-verification-did-not-finish",
+        error=error,
+    )
+    outcome.update(
+        {
+            "importStatus": "resumed" if resumed else "imported",
+            "agentId": result["cdsBotId"],
+            "schemaName": result["schemaName"],
+        }
+    )
+    return outcome
 
 
 def import_package_once(
@@ -807,13 +873,36 @@ def import_package_once(
 
     if replacement:
         _validate_replacement_result(imported, replacement)
-    connection = validate_existing_dev_connection(
-        client,
-        environment_id=normalized_environment_id,
-        agent_id=imported["cdsBotId"],
-        selection_source="alm-import-result",
-        setup_source="alm-import",
-    )
+    try:
+        connection = validate_existing_dev_connection(
+            client,
+            environment_id=normalized_environment_id,
+            agent_id=imported["cdsBotId"],
+            selection_source="alm-import-result",
+            setup_source="alm-import",
+            require_alm_family=expected_family is not None,
+            expected_schema_name=imported["schemaName"],
+        )
+    except (
+        AgentBuilderError,
+        ExistingDASetupError,
+        ValueError,
+    ) as exc:
+        outcome = _verification_unavailable_outcome(
+            identity,
+            imported,
+            exc,
+            resumed=resumed,
+        )
+        _persist_dispatched_record(
+            record_path,
+            identity,
+            status="imported",
+            outcome=outcome,
+            result=imported,
+            operation_error=exc,
+        )
+        return outcome
     outcome = _verified_outcome(
         identity,
         imported,
@@ -822,7 +911,11 @@ def import_package_once(
     )
     if (
         expected_family is not None
-        and outcome["almFamilyId"].casefold() != expected_family.casefold()
+        and (
+            not isinstance(outcome.get("almFamilyId"), str)
+            or outcome["almFamilyId"].casefold()
+            != expected_family.casefold()
+        )
     ):
         outcome = _failure_outcome(
             identity,
@@ -909,7 +1002,11 @@ def main(argv: list[str] | None = None) -> int:
         ObjectModelConverterError,
         ValueError,
     ) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        _print_http_error_response(
+            exc,
+            marker="DA_ALM_IMPORT_ERROR",
+        )
+        _print_exception(exc)
         return 1
     print(f"DA_ALM_IMPORT_JSON:{json.dumps(result, ensure_ascii=True)}")
     return 0 if result["kind"] == "success" else 2

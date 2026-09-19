@@ -97,6 +97,7 @@ def _write_setup_state(
         root,
         connection,
         None,
+        None,
     )
     setup_existing_da._record_canonical_setup_ready(
         root,
@@ -263,6 +264,8 @@ def test_create_persists_verified_identity_without_attaching(
             "agent_id": AGENT_ID,
             "selection_source": "alm-import-result",
             "setup_source": "alm-import",
+            "require_alm_family": True,
+            "expected_schema_name": SCHEMA,
         }
     ]
     assert not (tmp_path / setup_alm_import.CANONICAL_SETUP_STATE).exists()
@@ -270,6 +273,47 @@ def test_create_persists_verified_identity_without_attaching(
     assert record["status"] == "verified"
     assert record["input"]["expectedAlmFamilyId"] == "family-id"
     assert "packagePath" not in json.dumps(record)
+
+
+def test_supplied_package_uses_dev_route_without_alm_family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _write_package(tmp_path / "agent.zip")
+    client = FakeClient()
+    validations: list[dict[str, Any]] = []
+    connection = _connection()
+    connection["agent"]["almFamilyId"] = None
+
+    def validate(_client: FakeClient, **kwargs: Any) -> dict[str, Any]:
+        validations.append(kwargs)
+        return connection
+
+    monkeypatch.setattr(
+        setup_alm_import,
+        "validate_existing_dev_connection",
+        validate,
+    )
+
+    result = setup_alm_import.import_package_once(
+        client,
+        environment_id=ENVIRONMENT_ID,
+        package_path=package,
+        kit_root=tmp_path,
+    )
+
+    assert result["kind"] == "success"
+    assert "almFamilyId" not in result
+    assert validations == [
+        {
+            "environment_id": ENVIRONMENT_ID,
+            "agent_id": AGENT_ID,
+            "selection_source": "alm-import-result",
+            "setup_source": "alm-import",
+            "require_alm_family": False,
+            "expected_schema_name": SCHEMA,
+        }
+    ]
 
 
 def test_verified_operation_resumes_after_package_cleanup_without_second_import(
@@ -420,17 +464,21 @@ def test_imported_identity_resumes_verification_without_second_import(
         validate,
     )
 
-    with pytest.raises(agentbuilder.AgentBuilderError, match="read failed"):
-        setup_alm_import.import_package_once(
-            client,
-            environment_id=ENVIRONMENT_ID,
-            package_path=package,
-            kit_root=tmp_path,
-            expected_alm_family_id="family-id",
-        )
+    first = setup_alm_import.import_package_once(
+        client,
+        environment_id=ENVIRONMENT_ID,
+        package_path=package,
+        kit_root=tmp_path,
+        expected_alm_family_id="family-id",
+    )
 
+    assert first["kind"] == "imported-unverified"
+    assert first["importStatus"] == "imported"
+    assert first["reason"] == "direct-verification-did-not-finish"
+    assert first["errorMessage"] == "read failed"
     record = json.loads(_records(tmp_path)[0].read_text(encoding="utf-8"))
     assert record["status"] == "imported"
+    assert record["outcome"] == first
     package.unlink()
 
     result = setup_alm_import.import_package_once(
@@ -443,6 +491,43 @@ def test_imported_identity_resumes_verification_without_second_import(
     )
 
     assert result["importStatus"] == "resumed"
+    assert len(client.import_calls) == 1
+
+
+def test_imported_identity_reports_verification_http_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _write_package(tmp_path / "agent.zip")
+    client = FakeClient()
+    response = requests.Response()
+    response.status_code = 404
+    response.headers["x-ms-request-id"] = "request-404"
+    error = agentbuilder.AgentBuilderHTTPError(
+        "Dev realm configuration",
+        404,
+        error_code="ObjectNotFound",
+        request_id="request-404",
+        response=response,
+    )
+    monkeypatch.setattr(
+        setup_alm_import,
+        "validate_existing_dev_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+
+    result = setup_alm_import.import_package_once(
+        client,
+        environment_id=ENVIRONMENT_ID,
+        package_path=package,
+        kit_root=tmp_path,
+        expected_alm_family_id="family-id",
+    )
+
+    assert result["kind"] == "imported-unverified"
+    assert result["statusCode"] == 404
+    assert result["errorCode"] == "ObjectNotFound"
+    assert result["requestId"] == "request-404"
     assert len(client.import_calls) == 1
 
 
@@ -478,11 +563,16 @@ def test_conflict_is_cached_and_replacement_is_a_distinct_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package = _write_package(tmp_path / "agent.zip")
+    response = requests.Response()
+    response.status_code = 409
+    response._content = b'{"error":{"message":"duplicate agent"}}'
+    response.encoding = "utf-8"
     conflict = agentbuilder.AgentBuilderHTTPError(
         "Native ALM import",
         409,
         error_code="DuplicateItemError",
         request_id="request-1",
+        response=response,
     )
     client = FakeClient(error=conflict)
     monkeypatch.setattr(
@@ -507,7 +597,11 @@ def test_conflict_is_cached_and_replacement_is_a_distinct_operation(
     assert first["kind"] == "conflict"
     assert first["statusCode"] == 409
     assert first["requestId"] == "request-1"
+    assert first["responseBody"] == (
+        '{"error":{"message":"duplicate agent"}}'
+    )
     assert second["importStatus"] == "cached"
+    assert second["responseBody"] == first["responseBody"]
     assert len(client.import_calls) == 1
 
     client.error = None
@@ -588,6 +682,29 @@ def test_replacement_rejects_different_managed_workspace(
     with pytest.raises(
         setup_alm_import.AlmImportSetupError,
         match="connected to a different",
+    ):
+        setup_alm_import.import_package_once(
+            client,
+            environment_id=ENVIRONMENT_ID,
+            package_path=package,
+            kit_root=tmp_path,
+            replacement_agent_id=AGENT_ID,
+            confirmed_replacement_agent_id=AGENT_ID,
+        )
+
+    assert client.import_calls == []
+
+
+def test_replacement_rejects_agent_not_configured_in_managed_workspace(
+    tmp_path: Path,
+) -> None:
+    package = _write_package(tmp_path / "agent.zip")
+    _write_setup_state(tmp_path, agent_id=OTHER_AGENT_ID)
+    client = FakeClient()
+
+    with pytest.raises(
+        setup_alm_import.AlmImportSetupError,
+        match="not configured in this workspace",
     ):
         setup_alm_import.import_package_once(
             client,

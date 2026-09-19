@@ -11,9 +11,12 @@ This skill owns the maker interaction and the handoff into existing-Dev setup.
 
 ## Identify the target
 
-Ask for a Copilot Studio environment URL if the maker has not supplied one. A
-recognized Copilot Studio URL is preferred because it identifies both the
-environment and service ring. Do not ask the maker to choose a ring or tenant.
+Accept an environment URL and infer its environment ID. The URL should have a
+segment denoting the service ring, such as `test` or `preprod`; when neither
+segment is present, confirm the `prod` ring with the user. Ask the maker only
+when the environment ID is unclear.
+
+Pass the resolved environment ID and ring to the import command.
 
 When both the package and target environment are known, mark **Choose the
 starting point and target environment** complete. Keep **Verify access and agent
@@ -34,7 +37,8 @@ message from the parent skill. Run:
 
 ```text
 python scripts/setup_alm_import.py \
-  --target-url "{POWER_PLATFORM_ENVIRONMENT_URL}" \
+  --environment-id "{ENVIRONMENT_ID}" \
+  --ring "{RING}" \
   --package "{NATIVE_AGENT_PACKAGE_PATH}"
 ```
 
@@ -64,16 +68,30 @@ python scripts/setup_existing_da.py attach \
   --ring "{RING}" \
   --api-version "{API_VERSION}" \
   --agent-id "{RETURNED_AGENT_ID}" \
+  --expected-schema-name "{RETURNED_SCHEMA_NAME}" \
   --setup-source alm-import
 ```
 
 Parse `DA_EXISTING_DEV_SETUP_JSON:`. Treat import `kind: success` only as
-permission to begin attachment. Treat setup as complete only when attachment
-reports `connectionStatus` as `workspace-ready` and `connectReady: true`.
+permission to begin attachment. When attachment reports `connectionStatus` as
+`workspace-ready`, show:
+
+> The imported Dev agent is now available in the local authoring workspace. I
+> materialized {TOPIC_COUNT} topics and {VARIABLE_COUNT} variables. Publishing
+> was not required to prepare the workspace. Next I'll validate its setup.
+
+Run the native FlightCheck maintenance sequence in `da-existing-dev.md`. Treat
+setup as complete only when its final
+`DA_SETUP_FLIGHTCHECK_JSON:` reports `connectReady: true`.
 
 If attachment reports that the managed workspace changed, use the explicit
 checkpoint-and-refresh choice from `da-existing-dev.md`. A refresh never
 repeats the import.
+
+If attachment fails after import `kind: success`, state:
+**The agent package was imported and verified in Dev, but its local workspace
+was not prepared. No new import is needed.** Show the attachment error and
+rerun only the attach command after resolving it.
 
 When complete, render the factual completion report from `da-existing-dev.md`
 using **Supplied native agent package** as the starting point. Build every other
@@ -90,20 +108,19 @@ show:
 
 Offer exactly:
 
-- **Use existing agent** — continue through `da-existing-dev.md`.
-- **Replace existing agent with this package** — validate the exact agent and
-  request separate replacement approval.
+- **Choose an existing agent in this environment**
+- **Replace an existing agent with this package**
 - **Cancel setup**
 
-Default to **Use existing agent**. Do not recommend replacement.
+Do not preselect a choice or recommend replacement. For either existing-agent choice, run `setup_existing_da.py list-agents` for the target environment, show the visible Dev agent names, and let the maker choose one exact agent. For **Choose an existing agent in this environment**, validate the selected agent and continue through `da-existing-dev.md`.
 
-Before replacement, directly validate the exact existing Dev agent using its
-Copilot Studio URL or known agent ID without attaching it or writing setup
-state:
+Before replacement, validate the exact selected Dev agent:
 
 ```text
 python scripts/setup_existing_da.py validate-agent \
-  --target-url "{COPILOT_STUDIO_AGENT_URL}"
+  --environment-id "{ENVIRONMENT_ID}" \
+  --agent-id "{INTERNAL_AGENT_ID}" \
+  --ring "{RING}"
 ```
 
 Parse `DA_AGENT_VALIDATION_JSON:`. Show its display name, then ask:
@@ -114,7 +131,7 @@ Parse `DA_AGENT_VALIDATION_JSON:`. Show its display name, then ask:
 Offer exactly:
 
 - **Continue replacement**
-- **Use existing agent**
+- **Choose the existing agent without replacement**
 - **Cancel setup**
 
 Never preselect or recommend **Continue replacement**. Continue only after the
@@ -123,7 +140,8 @@ confirmation arguments:
 
 ```text
 python scripts/setup_alm_import.py \
-  --target-url "{POWER_PLATFORM_ENVIRONMENT_URL}" \
+  --environment-id "{ENVIRONMENT_ID}" \
+  --ring "{RING}" \
   --package "{NATIVE_AGENT_PACKAGE_PATH}" \
   --replace-agent-id "{INTERNAL_AGENT_ID}" \
   --confirm-replace-agent-id "{INTERNAL_AGENT_ID}"
@@ -135,6 +153,15 @@ checkpointing and refreshing them.
 
 ## Handle other outcomes
 
+- `imported-unverified`: the import request completed and returned the persisted
+  agent identity, while direct agent or Dev-realm verification did not finish.
+  State clearly:
+  **The agent package was imported, but verification is not available yet, so
+  I have not prepared its local workspace.**
+  Preserve the reported verification status, error code, and request ID when
+  available. Do not infer that publication is required. Resolve the reported
+  access or service prerequisite, then rerun the identical command; receipt
+  replay resumes verification without another import POST.
 - `pre-dispatch-failure`: no request reached the service. Explain the local,
   DNS, or connection prerequisite. State that no remote import was observed. Do
   not retry automatically.
@@ -147,11 +174,11 @@ checkpointing and refreshing them.
   Follow the manual reconciliation procedure in
   `src/reference/native-alm-import.md`.
 
-If the command exits during direct verification after recording status
-`imported`, the mutation already returned an identity. Do not start another
-import. Resolve the reported verification prerequisite, then rerun the
-identical command. Receipt replay resumes verification without another POST.
-If verification still fails, stop and retain the receipt.
+If an older command exits during direct verification after recording status
+`imported`, treat it as the same completed-import state. Rerun the identical
+command with the updated tooling. Receipt replay verifies the direct agent and
+Dev route without another POST. If verification still fails, stop and retain
+the receipt.
 
 The command caches every operation outcome. Repeating the same command returns
 the cached result without another POST. After the cause of a recorded

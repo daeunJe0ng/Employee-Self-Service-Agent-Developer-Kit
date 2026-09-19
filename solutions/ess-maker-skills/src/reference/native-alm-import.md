@@ -35,8 +35,10 @@ Do not describe an unknown claim as supported behavior.
 
 ## Safety invariants
 
-1. Resolve the environment and ring from a recognized Copilot Studio URL when
-   available.
+1. For the session-facing supplied-package path, require the caller to supply
+   an explicitly resolved environment ID and service ring. Infer `test` or
+   `preprod` from the environment URL; when neither segment is present,
+   confirm the `prod` ring with the user. Ask when the target remains unclear.
 2. Validate the exact environment-specific API host before sending a token.
 3. Validate local projection dependencies before remote mutation.
 4. Observe package type, schema, and SHA-256 without extracting or rewriting
@@ -53,22 +55,23 @@ Do not describe an unknown claim as supported behavior.
     verification, or workspace work.
 12. Treat malformed success and response loss as unresolved outcomes, not
     permission to post again.
-13. Directly verify the returned agent ID and schema before handing it to
-    existing-Dev setup.
+13. Directly verify that the returned agent ID routes to Dev. Carry the
+    returned schema into existing-Dev setup and verify it against the fetched
+    component content before projection.
 14. Keep workspace acquisition and projection out of the import transport.
 
 ## Durable command boundary
 
 `scripts/setup_alm_import.py` owns:
 
-- target and ring resolution through existing AgentBuilder helpers;
+- target and ring validation through existing AgentBuilder helpers;
 - local projection-runtime preflight;
 - bounded package inspection;
 - replacement confirmation and direct Dev validation;
 - one non-retried, non-redirected import request;
 - per-operation records under `.local/setup/alm-import/`;
 - response classification;
-- direct verification of the returned identity.
+- direct Dev-route verification of the returned identity.
 
 It does not:
 
@@ -87,7 +90,8 @@ internal command inputs and are not maker-facing output.
 
 | `kind` | Meaning | Safe next action |
 | --- | --- | --- |
-| `success` | The service returned an identity and direct Dev validation agreed | Continue through existing-Dev attachment |
+| `success` | The service returned an identity and schema, and direct agent plus realm reads confirmed that the exact agent routes to Dev | Continue through existing-Dev attachment, which confirms the fetched component content matches the returned schema |
+| `imported-unverified` | The import returned and persisted a usable identity, but direct agent or realm verification did not finish | Resolve the reported verification prerequisite, then rerun the identical command to resume verification without another POST |
 | `conflict` | Create-only protection found an existing agent | Use the existing agent or separately approve exact replacement |
 | `rejected` | The service returned a normal non-409 error | Resolve the reported prerequisite; do not retry automatically |
 | `pre-dispatch-failure` | The request did not reach the service | Resolve the local, DNS, or connection failure |
@@ -141,7 +145,8 @@ another import request, or apply to replacement.
 
 ### Recover an imported but unverified agent
 
-If direct verification does not finish after the service returns an identity:
+If direct agent or realm verification does not finish after the service
+returns an identity:
 
 1. Keep the `imported` record and package unchanged.
 2. Confirm the returned agent is visible in the exact target environment.
@@ -186,6 +191,7 @@ For an existing managed workspace, attachment may require explicit
 checkpoint-and-refresh approval. That refresh is local and read-only with
 respect to the imported agent; it does not repeat the package mutation.
 
-Import `kind: success` is not setup completion. Setup is complete only when
-existing-Dev attachment reports both `connectionStatus: workspace-ready` and
-`connectReady: true`.
+Import `kind: success` is not setup completion. After existing-Dev attachment
+reports `connectionStatus: workspace-ready`, setup must refresh the native
+FlightCheck step evidence. Setup is complete only when the final maintained
+FlightCheck result reports `connectReady: true`.
