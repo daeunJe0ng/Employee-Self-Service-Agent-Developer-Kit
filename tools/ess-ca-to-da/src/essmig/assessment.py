@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from essmig.merge import ComponentResult, MergeResult, Outcome
+from essmig.merge import _AGENT_SUFFIX, ComponentResult, MergeResult, Outcome
 
 
 class Eligibility(StrEnum):
@@ -129,6 +129,10 @@ def _worklist(results: list[ComponentResult]) -> list[str]:
     worklist: list[str] = []
     for result in results:
         name = _name(result)
+        if result.suffix == _AGENT_SUFFIX:
+            if result.outcome is Outcome.CONFLICTED:
+                worklist.append(f"{name}: {result.detail}")
+            continue
         if result.outcome is Outcome.CONFLICTED:
             count = len(result.conflicts)
             worklist.append(

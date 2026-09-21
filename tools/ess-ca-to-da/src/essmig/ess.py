@@ -150,6 +150,23 @@ BOT_COMPONENT_TYPE_LABELS = {
 # previous toolkit, which only ever looked at Topic (V2).
 MIGRATABLE_COMPONENT_TYPES = frozenset({9, 12, 15, 16, 20})
 
+# Additional customized types the tool detects and *reports* even though it does
+# not carry them structurally into ``agent.yml``: agent-level settings and content
+# that a package cannot ship (re-created by hand after import, with their
+# configuration reproduced in the report), plus skills, which the Declarative Agent
+# models as connected agents/actions rather than as a carried component. Surfacing
+# these — instead of dropping them silently at discovery — is what lets the report
+# tell a customer *everything* that will not come across on its own.
+#   14 Bot File Attachment · 18 Copilot Settings · 19 Test Case (evaluations)
+#    1 Skill · 13 Skill (V2)
+REPORT_ONLY_COMPONENT_TYPES = frozenset({1, 13, 14, 18, 19})
+
+# Every type the owned-component sweep asks Dataverse for. Net-new components of
+# any other type still arrive via the dependency path and are reported too; this
+# set only bounds the (per-component) layer queries for *in-place edits* of
+# out-of-box content.
+DETECTABLE_COMPONENT_TYPES = MIGRATABLE_COMPONENT_TYPES | REPORT_ONLY_COMPONENT_TYPES
+
 # Lowercase CA agent schema-name prefixes. A component's schemaname must start
 # with one of these; components layered from another agent are out of scope.
 # ``core`` is the hub/router bot (``...core``), a distinct agent from the legacy

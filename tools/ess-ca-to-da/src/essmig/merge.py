@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from essmig.discovery import CaComponent
+from essmig.discovery import AgentMetadata, CaComponent
 from essmig.ess import non_ported_pack_of, schema_suffix
 from essmig.instructions import (
     InstructionMerger,
@@ -245,10 +245,16 @@ def merge(
     components: dict[str, CaComponent],
     vertical: str,
     *,
+    agent_metadata: AgentMetadata | None = None,
     merge_instructions: InstructionMerger | None = None,
     resolver_factory: ResolverFactory | None = None,
 ) -> MergeResult:
     """Apply the customer's customizations to the DA template.
+
+    ``agent_metadata`` carries the agent's own display name and description; when
+    the customer renamed or re-described the agent it is applied to the emitted
+    config (``botName``/``gptDisplayName``) and ``agent.yml`` (``entity.description``)
+    and reported like any other customization.
 
     ``merge_instructions`` reconciles the GPT ``instructions`` scalar, which no
     structural merge can carry (the CA and DA word the same instructions
@@ -272,6 +278,9 @@ def merge(
         raise RuntimeError("Reference agent.yml has no 'components' list.")
 
     results: list[ComponentResult] = []
+    agent_result = _merge_agent_metadata(reference, agent_metadata)
+    if agent_result is not None:
+        results.append(agent_result)
     for component in sorted(components.values(), key=lambda c: c.schemaname):
         result = _merge_one(
             component,
@@ -288,6 +297,100 @@ def merge(
     _apply_unsupported_rules(entries, results)
     _ensure_knowledge_search(entries)
     return MergeResult(vertical=vertical, agent=agent, results=results)
+
+
+_AGENT_SUFFIX = "(agent settings)"
+
+
+def _merge_agent_metadata(
+    reference: ReferenceSet, metadata: AgentMetadata | None
+) -> ComponentResult | None:
+    """Carry a renamed / re-described agent onto the DA, or flag it for review.
+
+    Returns ``None`` when there is nothing to say — no metadata was read, or the
+    agent's name and description are unchanged from what ESS shipped. A confirmed
+    change (the customer's value differs from the shipped baseline) is applied to the
+    emitted config and ``agent.yml`` and reported ``MERGED``. When the baseline could
+    not be read the tool will not silently overwrite the DA's own name/description:
+    if the customer's value differs from the DA's it is reported ``CONFLICTED`` for a
+    human to confirm; if it matches, there is nothing to do.
+    """
+    if metadata is None:
+        return None
+
+    entity = reference.agent.get("entity") if isinstance(reference.agent, dict) else None
+    values = reference.config.get("values") if isinstance(reference.config, dict) else None
+    da_description = entity.get("description") if isinstance(entity, dict) else None
+    da_name = values.get("botName") if isinstance(values, dict) else None
+
+    applied: list[str] = []
+    review: list[str] = []
+
+    # Display name -> config botName / gptDisplayName (agent.yml resolves displayName
+    # from botName via a ${config.values[...]} pointer).
+    if metadata.name is not None and metadata.name.strip():
+        if metadata.name_changed:
+            _set_agent_name(values, metadata.name)
+            applied.append(f'display name -> "{metadata.name}"')
+        elif metadata.baseline_name is None and _differs(metadata.name, da_name):
+            review.append(
+                f'you have "{metadata.name}"; the template ships "{da_name}". '
+                "Confirm which name the agent should keep."
+            )
+
+    # Description -> agent.yml entity.description.
+    if metadata.description is not None and metadata.description.strip():
+        if metadata.description_changed:
+            if isinstance(entity, dict):
+                entity["description"] = metadata.description
+            applied.append("description")
+        elif metadata.baseline_description is None and _differs(
+            metadata.description, da_description
+        ):
+            review.append(
+                "your description differs from the template's. Confirm which "
+                "description the agent should keep."
+            )
+
+    if not applied and not review:
+        return None
+
+    result = ComponentResult(
+        suffix=_AGENT_SUFFIX,
+        schemaname=reference.da_schemaname,
+        display_name=metadata.name or "Agent",
+        component_type_label="Agent",
+        outcome=Outcome.MERGED if applied else Outcome.CONFLICTED,
+    )
+    if applied:
+        result.detail = "Carried your agent " + " and ".join(applied) + " onto the template."
+    if review:
+        joined = " ".join(review)
+        result.detail = (result.detail + " " if result.detail else "") + joined
+        result.configuration = _agent_configuration(metadata)
+    return result
+
+
+def _set_agent_name(values: Any, name: str) -> None:
+    """Set every display-name config value the template drives off ``botName``."""
+    if not isinstance(values, dict):
+        return
+    for key in ("botName", "gptDisplayName"):
+        if key in values:
+            values[key] = name
+
+
+def _differs(ours: str | None, theirs: Any) -> bool:
+    return isinstance(theirs, str) and ours is not None and ours.strip() != theirs.strip()
+
+
+def _agent_configuration(metadata: AgentMetadata) -> str:
+    lines = []
+    if metadata.name is not None:
+        lines.append(f"name: {metadata.name}")
+    if metadata.description is not None:
+        lines.append(f"description: {metadata.description}")
+    return "\n".join(lines)
 
 
 def _ensure_knowledge_search(entries: list[Any]) -> None:

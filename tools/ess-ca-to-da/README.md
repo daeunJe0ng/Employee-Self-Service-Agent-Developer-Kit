@@ -218,9 +218,19 @@ questions* — so the endpoint and scope are deliberately overridable.
 Knowledge sources **do** ride in the package: a SharePoint (or other) source is
 carried as a `KnowledgeSourceComponent`, marked customer-owned, and the GPT is
 pointed at it (`knowledgeSources: SearchAllKnowledgeSources`) so it is actually
-searched after import. Custom metrics and other true agent-settings customizations
-still cannot ride in the package; the report lists them under *Re-create these in
-the agent's settings*, to be applied by hand in the target after import.
+searched after import. Custom metrics, Copilot settings, file attachments,
+evaluations (test cases) and skills cannot ride in the package, but they are no
+longer dropped silently: every one is **detected and reported** under *Re-create
+these in the agent's settings* (with its configuration reproduced) or, where the DA
+has no equivalent yet, as *not supported yet*.
+
+The agent's own **display name and description** migrate too. If the customer
+renamed or re-described the agent on the CA, the new name is written to the emitted
+config (`botName`/`gptDisplayName`) and the new description to `agent.yml`
+(`entity.description`), and the change is shown in `customizations.md` under **Agent
+name & description**. The tool compares against the shipped ESS baseline so an
+untouched agent is left alone; when it cannot read the baseline it reports the
+difference for review rather than overwriting the template's own name/description.
 
 Agent **instructions** are migrated with a language model. The CA and DA ship the
 *same* instructions worded differently, so a structural merge of the `instructions`

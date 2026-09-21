@@ -42,7 +42,7 @@ from essmig.ess import (
     BOT_COMPONENT_TYPE_LABELS,
     CA_AGENT_SCHEMANAMES,
     CA_SOLUTION_BY_VERTICAL,
-    MIGRATABLE_COMPONENT_TYPES,
+    DETECTABLE_COMPONENT_TYPES,
     OOB_CA_SOLUTIONS,
     TARGETS,
     schema_suffix,
@@ -54,12 +54,80 @@ _SOLUTION_COMPONENTS_ENTITY = "solutioncomponents"
 _COMPONENT_LAYERS_ENTITY = "msdyn_componentlayers"
 _BOTCOMPONENTS_ENTITY = "botcomponents"
 _BOTCOMPONENT_ENTITY_NAME = "botcomponent"
+_BOTS_ENTITY = "bots"
+_BOT_ENTITY_NAME = "bot"
+
+# Attribute keys that carry the agent's display name / description in the ``bot``
+# row and its component-layer attributes. Tried in order so a schema difference
+# between environments degrades to "not detected" rather than a crash.
+_AGENT_NAME_KEYS = ("name", "displayname", "schemaname")
+_AGENT_DESCRIPTION_KEYS = ("description",)
 
 _OBJECT_ID_FIELD = "dependentcomponentobjectid"
 _ENTITY_NAME_FIELD = "dependentcomponententitylogicalname"
 _SOLUTION_NAME_FIELD = "msdyn_solutionname"
 _COMPONENT_JSON_FIELD = "msdyn_componentjson"
 _EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
+
+
+@dataclass
+class AgentMetadata:
+    """The agent's own display name and description, and the values ESS shipped.
+
+    ``name``/``description`` are the customer's *effective* values (the topmost
+    solution layer). ``baseline_name``/``baseline_description`` are what ESS shipped
+    (the managed out-of-box layer), so the merge can tell an intentional rename or
+    re-description apart from an untouched agent. ``baseline_*`` is ``None`` when the
+    baseline could not be read; the merge then degrades to a review rather than a
+    silent overwrite of the DA's own name/description.
+    """
+
+    name: str | None = None
+    description: str | None = None
+    baseline_name: str | None = None
+    baseline_description: str | None = None
+
+    @property
+    def name_changed(self) -> bool:
+        return _is_changed(self.name, self.baseline_name)
+
+    @property
+    def description_changed(self) -> bool:
+        return _is_changed(self.description, self.baseline_description)
+
+    @property
+    def is_customized(self) -> bool:
+        return self.name_changed or self.description_changed
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "baseline_name": self.baseline_name,
+            "baseline_description": self.baseline_description,
+        }
+
+    @classmethod
+    def from_json(cls, payload: Any) -> AgentMetadata | None:
+        if not isinstance(payload, dict):
+            return None
+        return cls(
+            name=payload.get("name"),
+            description=payload.get("description"),
+            baseline_name=payload.get("baseline_name"),
+            baseline_description=payload.get("baseline_description"),
+        )
+
+
+def _is_changed(ours: str | None, base: str | None) -> bool:
+    """True when the customer's value differs from the shipped baseline.
+
+    A missing baseline is *not* treated as a change here — the merge handles the
+    "baseline unknown" case explicitly so it can ask for review rather than assume.
+    """
+    if ours is None or base is None:
+        return False
+    return ours.strip() != base.strip()
 
 
 @dataclass
@@ -129,6 +197,8 @@ class DiscoveryResult:
     components: dict[str, CaComponent]
     skipped: list[dict[str, Any]]
     """Customized components that were dropped, with the reason — reported, not silent."""
+    agent: AgentMetadata | None = None
+    """The agent's own name/description customization, or ``None`` if not read."""
 
 
 def installed_targets(client: DataverseClient) -> list[str]:
@@ -211,6 +281,7 @@ def discover(
         solution_id=solution_id,
         components=components,
         skipped=skipped,
+        agent=_agent_metadata(client, vertical),
     )
 
 
@@ -224,9 +295,13 @@ def _classify(
     living in the unmanaged ``Active`` layer). A lone layer inside an OOB ESS
     managed solution is untouched out-of-box content and is dropped silently.
 
-    **Migratable** — an allow-listed ``componenttype`` whose schema name belongs to
-    this vertical's agent. Anything customized but not migratable is dropped *with
-    a reason*, so the report can tell the customer what was left behind.
+    **Migratable or not** — every customized component owned by this vertical's
+    agent is kept so the report can account for it. Whether it can be carried in
+    the package (Topic, Bot Variable, Custom GPT, Knowledge Source, …) or only
+    re-created by hand (Copilot Settings, File Attachment, evaluations, Skills, …)
+    is decided downstream by projection/merge, which reproduces the configuration
+    of anything it cannot carry. Only components owned by *another* agent are
+    dropped here, *with a reason*.
     """
     kept: dict[str, CaComponent] = {}
     skipped: list[dict[str, Any]] = []
@@ -244,15 +319,6 @@ def _classify(
                     "component_id": component_id,
                     "schemaname": component.schemaname,
                     "reason": f"owned by another agent (expected prefix '{prefix}')",
-                }
-            )
-            continue
-        if component.component_type not in MIGRATABLE_COMPONENT_TYPES:
-            skipped.append(
-                {
-                    "component_id": component_id,
-                    "schemaname": component.schemaname,
-                    "reason": f"component type not migratable: {component.component_type_label}",
                 }
             )
             continue
@@ -360,19 +426,83 @@ def _extract_dependents(response: Any) -> list[tuple[str, str]]:
     return dependents
 
 
+def _agent_metadata(client: DataverseClient, vertical: str) -> AgentMetadata | None:
+    """The agent's own name/description, effective and shipped-baseline.
+
+    Reads the live ``bot`` row for the customer's effective values and the bot's
+    managed component layer for the shipped baseline, so a rename or re-description
+    can be told apart from an untouched agent. Deliberately best-effort: the exact
+    ``bot`` schema varies between environments, so any read failure degrades to
+    ``None`` (agent metadata simply not assessed) rather than aborting the migration.
+    """
+    schemaname = CA_AGENT_SCHEMANAMES[vertical]
+    try:
+        rows = client.query_all(
+            _BOTS_ENTITY,
+            select="botid,name,description,schemaname",
+            filter=f"schemaname eq '{schemaname}'",
+        )
+    except Exception:  # noqa: BLE001 - best-effort; never block the migration
+        return None
+    row = next((r for r in rows if isinstance(r, dict)), None)
+    if row is None:
+        return None
+
+    metadata = AgentMetadata(
+        name=_pick(row, _AGENT_NAME_KEYS),
+        description=_pick(row, _AGENT_DESCRIPTION_KEYS),
+    )
+    bot_id = row.get("botid")
+    if isinstance(bot_id, str) and bot_id and bot_id != _EMPTY_GUID:
+        baseline = _agent_baseline(client, bot_id)
+        if baseline is not None:
+            metadata.baseline_name = _pick(baseline, _AGENT_NAME_KEYS)
+            metadata.baseline_description = _pick(baseline, _AGENT_DESCRIPTION_KEYS)
+    return metadata
+
+
+def _agent_baseline(client: DataverseClient, bot_id: str) -> dict[str, Any] | None:
+    """The shipped (managed OOB layer) attributes of the agent's ``bot`` row."""
+    try:
+        layers = client.query_all(
+            _COMPONENT_LAYERS_ENTITY,
+            select=None,
+            filter=(
+                f"msdyn_componentid eq '{bot_id}' and "
+                f"msdyn_solutioncomponentname eq '{_BOT_ENTITY_NAME}'"
+            ),
+        )
+    except Exception:  # noqa: BLE001 - best-effort; baseline is optional
+        return None
+    oob = [layer for layer in layers if _in_oob_solution(layer)]
+    if not oob:
+        return None
+    return _component_attributes(oob)
+
+
+def _pick(attributes: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    """The first non-empty string value among ``keys`` (case-insensitive)."""
+    lowered = {str(key).lower(): value for key, value in attributes.items()}
+    for key in keys:
+        value = lowered.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
 def _owned_botcomponents(client: DataverseClient, vertical: str) -> list[tuple[str, str]]:
-    """``(botcomponentid, "botcomponent")`` for the agent's own migratable components.
+    """``(botcomponentid, "botcomponent")`` for the agent's own detectable components.
 
     Read straight from the ``botcomponent`` table by schema-name prefix, so an
     in-place edit of an out-of-box component (which the uninstall-dependency function
     never reports) still reaches the layer classification. Restricted to the
-    migratable component types to keep the follow-up per-component layer queries
+    detectable component types to keep the follow-up per-component layer queries
     bounded; untouched components are dropped there, not here.
     """
     prefix = CA_AGENT_SCHEMANAMES[vertical]
     type_filter = " or ".join(
         f"componenttype eq {component_type}"
-        for component_type in sorted(MIGRATABLE_COMPONENT_TYPES)
+        for component_type in sorted(DETECTABLE_COMPONENT_TYPES)
     )
     rows = client.query_all(
         _BOTCOMPONENTS_ENTITY,

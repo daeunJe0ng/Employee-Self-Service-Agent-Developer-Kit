@@ -131,16 +131,20 @@ For each candidate, discovery reads its **solution layers** from the `msdyn_comp
 
 > **Layer ordering is made deterministic, not trusted.** The virtual table does **not** honour `$orderby` and its row order is undocumented. Relying on "the last row Dataverse returned wins" is a latent bug: if the environment returns the unmanaged **Active** overlay *before* the managed baseline, the baseline silently overwrites the customer's edit and the tool reads the shipped text. `_ordered_base_first` sorts layers by solution-layer semantics — managed OOB solutions are the base, the customer's unmanaged overlay always wins — so precedence is correct regardless of row order. *(This was the second half of the "instructions don't migrate" bug.)*
 
-### 4.3 Classify: customized **and** migratable (`_classify`)
+### 4.3 Classify: keep every customization the agent owns (`_classify`)
 
-A candidate is kept only if it is both:
+A candidate is kept when it is **customized** and owned by *this* vertical's agent:
 
 - **Customized** — more than one layer (managed OOB base + the customer's overlay), **or** a lone layer that is *not* in an OOB ESS solution (a net-new component in the unmanaged `Active` layer). A lone layer *inside* an OOB managed solution is untouched shipped content and is dropped silently. `OOB_CA_SOLUTIONS` (base + core + extension packs) defines "OOB".
-- **Migratable** — an allow-listed `componenttype` (`MIGRATABLE_COMPONENT_TYPES = {9, 12, 15, 16, 20}` → topic, variable, GPT, knowledge source, metric) whose schema name belongs to *this* vertical's agent.
+- **Owned by this agent** — the schema name carries this vertical's agent prefix. A component owned by another agent is dropped **with a reason**.
 
-Anything customized but **not** migratable is dropped **with a reason**, so the report can tell the customer exactly what was left behind. `--preferred-solution` optionally narrows discovery to the members of a named unmanaged solution.
+Every customized, agent-owned component is kept regardless of `componenttype`, so the report can account for **all** of it. Whether a component is *carried* in the package or only *re-created by hand* is decided downstream by projection/merge — it is no longer silently dropped at discovery. The owned-component sweep queries `DETECTABLE_COMPONENT_TYPES` (the carriable `MIGRATABLE_COMPONENT_TYPES = {9, 12, 15, 16, 20}` → topic, variable, GPT, knowledge source, metric — plus `REPORT_ONLY_COMPONENT_TYPES = {1, 13, 14, 18, 19}` → skills, file attachments, Copilot settings, evaluations/test cases) so in-place edits of those types are found too; net-new components of any type still arrive via the dependency path.
 
-The output is a `DiscoveryResult`: the kept `CaComponent`s (hydrated: schema name, type, effective `data`, layers) plus the skipped list with reasons.
+The agent's own **name and description** are read separately (`_agent_metadata`, from the live `bot` row plus its managed component layer for the shipped baseline) and carried on `DiscoveryResult.agent` as an `AgentMetadata`. This is best-effort: any read failure degrades to `None` (agent metadata simply not assessed) rather than aborting the migration.
+
+`--preferred-solution` optionally narrows discovery to the members of a named unmanaged solution.
+
+The output is a `DiscoveryResult`: the kept `CaComponent`s (hydrated: schema name, type, effective `data`, layers), the skipped list with reasons, and the optional `agent` metadata.
 
 ---
 
@@ -266,7 +270,8 @@ There is deliberately **no** persistent migration state and **no** incremental/p
 - **Import endpoint is unverified** against a live environment (see §9). Highest-risk area for a real customer run.
 - **Discovery assumptions** validated against one HR environment: the `botcomponents` entity set name and `componenttype eq N` filter, and the assumption that a Copilot Studio UI instruction edit creates an `Active` layer on `gpt.default`. Confirmed working for the instructions case; other verticals/edit types warrant a live pass.
 - **LLM reconciliation is non-deterministic** by nature. `--keep-instructions` exists for runs that need reproducible output or where `gh` Copilot access is unavailable; the reconciled instructions should be reviewed like any other conflict resolution.
-- **Only `agent.yml` component types in `MIGRATABLE_COMPONENT_TYPES` migrate.** Anything else customized is reported as skipped/manual rather than carried — intentional, but it means some customizations are hand-work by design.
+- **Only `agent.yml` component types in `MIGRATABLE_COMPONENT_TYPES` are *carried* into the package.** Everything else the customer owns is still **detected and reported** (Copilot settings, file attachments, evaluations/test cases, skills, custom metrics) — routed to `MANUAL` (re-create in the agent's settings, configuration reproduced) or `NO_TARGET` (no DA equivalent yet) rather than silently dropped. Carrying more types structurally is future work; reporting them is not.
+- **Agent name/description migration reads the live `bot` entity.** `_agent_metadata` is best-effort: the `bots` entity-set name, its `name`/`description` fields, and the `bot` component-layer baseline are validated against one HR environment; a schema difference degrades to "not assessed" rather than a crash. When the shipped baseline cannot be read the tool will not overwrite the DA's own name/description — it reports the difference for review instead.
 
 ---
 
@@ -277,7 +282,7 @@ There is deliberately **no** persistent migration state and **no** incremental/p
 | `cli.py` | Command surface: `vendor`, `inspect`, `migrate` (+ `--import`). |
 | `auth.py` | MSAL public-client tokens (in-memory only). |
 | `dataverse.py` | Read-only Dataverse Web API client (paging, retries). |
-| `discovery.py` | Determine what the customer customized (`ours`); layer classification + deterministic ordering. |
+| `discovery.py` | Determine what the customer customized (`ours`): layer classification + deterministic ordering; every agent-owned customization is kept and reported; reads the agent's own name/description (`AgentMetadata`). |
 | `ess.py` | ESS constants: solution names, schema prefixes, component types, the OOB baseline set. |
 | `reference.py` | Vendored `base` (`ca-baseline.json`) and `theirs` (DA template); `vendor()`/`load()`. |
 | `projection.py` | CA component → DA `agent.yml` shape; schema-prefix rewriting. |

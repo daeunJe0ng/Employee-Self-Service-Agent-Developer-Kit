@@ -21,6 +21,7 @@ class FakeClient:
         members: list[str] | None = None,
         dependents: list[str] | None = None,
         owned: list[str] | None = None,
+        bot: dict[str, Any] | None = None,
     ) -> None:
         self._layers = layers
         self._members = members or []
@@ -29,6 +30,7 @@ class FakeClient:
         # existing tests see the pre-fix behaviour (the union collapses to one set).
         self._dependents = list(layers) if dependents is None else dependents
         self._owned = list(layers) if owned is None else owned
+        self._bot = bot
         self.layer_queries: list[str] = []
 
     def query_all(
@@ -37,6 +39,8 @@ class FakeClient:
         del select
         if entity_set == "solutions":
             return [{"solutionid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}]
+        if entity_set == "bots":
+            return [self._bot] if self._bot is not None else []
         if entity_set == "botcomponents":
             return [{"botcomponentid": component_id} for component_id in self._owned]
         if entity_set == "msdyn_componentlayers":
@@ -142,10 +146,14 @@ def test_a_component_owned_by_another_agent_is_skipped_with_a_reason() -> None:
     assert "owned by another agent" in result.skipped[0]["reason"]
 
 
-def test_an_unmigratable_component_type_is_skipped_with_a_reason() -> None:
+def test_a_non_carriable_component_type_is_detected_not_skipped() -> None:
+    # Types the package cannot carry (e.g. Test Case / evaluations, type 19) are no
+    # longer dropped at discovery — they are kept so the report can account for them.
+    # Whether they migrate or must be re-created by hand is decided downstream.
     result = run({"c1": [topic_layer("Active", "testcase.X", componenttype={"Value": 19})]})
-    assert result.components == {}
-    assert "Test Case" in result.skipped[0]["reason"]
+    assert list(result.components) == ["c1"]
+    assert result.components["c1"].component_type == 19
+    assert result.skipped == []
 
 
 def test_each_component_gets_its_own_layer_query_paired_with_its_entity_name() -> None:
@@ -249,3 +257,43 @@ def test_installed_targets_is_empty_when_no_ess_agent_is_installed() -> None:
     from essmig.discovery import installed_targets
 
     assert installed_targets(SolutionsClient(set())) == []  # type: ignore[arg-type]
+
+
+# --- agent name & description ------------------------------------------------
+
+_BOT_ID = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+_AGENT_SCHEMA = "msdyn_copilotforemployeeselfservicehr"
+
+
+def _bot_row(name: str, description: str) -> dict[str, Any]:
+    return {
+        "botid": _BOT_ID,
+        "name": name,
+        "description": description,
+        "schemaname": _AGENT_SCHEMA,
+    }
+
+
+def test_the_agents_name_and_description_are_read_with_their_baseline() -> None:
+    baseline_layer = layer(
+        HR_SOLUTION,
+        name="ESS HR (Preview)",
+        description="Shipped ESS description.",
+        schemaname=_AGENT_SCHEMA,
+    )
+    client = FakeClient(
+        {_BOT_ID: [baseline_layer]},
+        bot=_bot_row("Contoso People Helper", "Our tailored description."),
+    )
+    result = discover(client, "hr")  # type: ignore[arg-type]
+
+    assert result.agent is not None
+    assert result.agent.name == "Contoso People Helper"
+    assert result.agent.baseline_name == "ESS HR (Preview)"
+    assert result.agent.name_changed is True
+    assert result.agent.description_changed is True
+
+
+def test_an_agent_with_no_bot_row_yields_no_metadata() -> None:
+    result = run({})
+    assert result.agent is None

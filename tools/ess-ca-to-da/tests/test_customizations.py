@@ -156,3 +156,39 @@ def test_markdown_omits_migratability_when_no_outcomes_are_supplied() -> None:
 
     assert "Will it migrate?" not in markdown
     assert "Migration:" not in markdown
+
+
+# --- agent name & description ------------------------------------------------
+
+
+def test_render_markdown_shows_a_renamed_agent() -> None:
+    from essmig.discovery import AgentMetadata
+    from essmig.merge import _AGENT_SUFFIX
+
+    result = DiscoveryResult(
+        vertical="hr",
+        solution_unique_name="msdyn_CopilotForEmployeeSelfServiceHR",
+        solution_id="",
+        components={},
+        skipped=[],
+        agent=AgentMetadata(
+            name="Contoso People Helper",
+            description="Shipped.",
+            baseline_name="ESS HR (Preview)",
+            baseline_description="Shipped.",
+        ),
+    )
+    outcome = ComponentResult(
+        suffix=_AGENT_SUFFIX,
+        schemaname="gptagent_copilotforemployeeselfservicehr",
+        display_name="Contoso People Helper",
+        component_type_label="Agent",
+        outcome=Outcome.MERGED,
+        detail="Carried your agent display name onto the template.",
+    )
+    body = render_markdown(result, {}, {_AGENT_SUFFIX: outcome})
+
+    assert "## Agent name & description" in body
+    assert "Contoso People Helper" in body
+    assert "ESS HR (Preview)" in body
+    assert "✅ Migratable now" in body

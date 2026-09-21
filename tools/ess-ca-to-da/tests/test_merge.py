@@ -3,8 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from conftest import DA_PREFIX, ca_component, dialog_component, reference_set
+from essmig.discovery import AgentMetadata
 from essmig.llm import LlmUnavailable
 from essmig.merge import (
+    _AGENT_SUFFIX,
     Conflict,
     Decision,
     Outcome,
@@ -588,3 +590,83 @@ def test_a_resolver_can_answer_each_spot_differently() -> None:
     assert merged == {"a": 2, "b": 3}
     assert seen == ["x.a", "x.b"]
 
+
+
+# --- agent name & description ------------------------------------------------
+
+
+def _config_with_name(name: str) -> dict:
+    return {
+        "formatVersion": "1.0",
+        "realm": "dev",
+        "values": {"botName": name, "gptDisplayName": name},
+    }
+
+
+def test_a_renamed_agent_is_carried_onto_the_config() -> None:
+    reference = reference_set([], config=_config_with_name("ESS HR (Preview)"))
+    reference.agent["entity"]["description"] = "The shipped ESS description."
+    metadata = AgentMetadata(
+        name="Contoso People Helper",
+        description="The shipped ESS description.",
+        baseline_name="ESS HR (Preview)",
+        baseline_description="The shipped ESS description.",
+    )
+    merged = merge(reference, {}, "hr", agent_metadata=metadata)
+
+    assert reference.config["values"]["botName"] == "Contoso People Helper"
+    assert reference.config["values"]["gptDisplayName"] == "Contoso People Helper"
+    result = next(r for r in merged.results if r.suffix == _AGENT_SUFFIX)
+    assert result.outcome is Outcome.MERGED
+    assert "display name" in result.detail
+
+
+def test_a_re_described_agent_is_carried_onto_the_agent_yml() -> None:
+    reference = reference_set([], config=_config_with_name("ESS HR (Preview)"))
+    reference.agent["entity"]["description"] = "Shipped description."
+    metadata = AgentMetadata(
+        name="ESS HR (Preview)",
+        description="Our tailored HR helper description.",
+        baseline_name="ESS HR (Preview)",
+        baseline_description="Shipped description.",
+    )
+    merged = merge(reference, {}, "hr", agent_metadata=metadata)
+
+    assert reference.agent["entity"]["description"] == "Our tailored HR helper description."
+    result = next(r for r in merged.results if r.suffix == _AGENT_SUFFIX)
+    assert result.outcome is Outcome.MERGED
+    assert "description" in result.detail
+
+
+def test_an_unchanged_agent_produces_no_result() -> None:
+    reference = reference_set([], config=_config_with_name("ESS HR (Preview)"))
+    reference.agent["entity"]["description"] = "Shipped description."
+    metadata = AgentMetadata(
+        name="ESS HR (Preview)",
+        description="Shipped description.",
+        baseline_name="ESS HR (Preview)",
+        baseline_description="Shipped description.",
+    )
+    merged = merge(reference, {}, "hr", agent_metadata=metadata)
+
+    assert reference.config["values"]["botName"] == "ESS HR (Preview)"
+    assert not any(r.suffix == _AGENT_SUFFIX for r in merged.results)
+
+
+def test_a_missing_baseline_that_differs_from_the_template_needs_review() -> None:
+    reference = reference_set([], config=_config_with_name("ESS HR (Preview)"))
+    reference.agent["entity"]["description"] = "Shipped description."
+    metadata = AgentMetadata(name="Contoso People Helper", description="Shipped description.")
+    merged = merge(reference, {}, "hr", agent_metadata=metadata)
+
+    # Baseline unknown -> do not silently overwrite the template's name.
+    assert reference.config["values"]["botName"] == "ESS HR (Preview)"
+    result = next(r for r in merged.results if r.suffix == _AGENT_SUFFIX)
+    assert result.outcome is Outcome.CONFLICTED
+    assert "Confirm which name" in result.detail
+
+
+def test_no_agent_metadata_produces_no_agent_result() -> None:
+    reference = reference_set([], config=_config_with_name("ESS HR (Preview)"))
+    merged = merge(reference, {}, "hr", agent_metadata=None)
+    assert not any(r.suffix == _AGENT_SUFFIX for r in merged.results)

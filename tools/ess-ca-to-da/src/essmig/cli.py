@@ -27,7 +27,13 @@ from essmig.assessment import Assessment, assess
 from essmig.auth import discover_tenant, provider_for, provider_for_target
 from essmig.dataverse import DataverseClient
 from essmig.deliver import ImportResult, ImportTarget, import_package
-from essmig.discovery import CaComponent, DiscoveryResult, discover, installed_targets
+from essmig.discovery import (
+    AgentMetadata,
+    CaComponent,
+    DiscoveryResult,
+    discover,
+    installed_targets,
+)
 from essmig.ess import TARGETS
 from essmig.instructions import keep_target_instructions
 from essmig.merge import Outcome, merge
@@ -191,6 +197,7 @@ def _inspect_one(
         reference,
         result.components,
         vertical,
+        agent_metadata=result.agent,
         merge_instructions=keep_target_instructions,
     )
     outcomes = {component.suffix: component for component in merged.results}
@@ -274,6 +281,7 @@ def _migrate_one(
         reference,
         discovery.components,
         vertical,
+        agent_metadata=discovery.agent,
         merge_instructions=keep_target_instructions if args.keep_instructions else None,
         resolver_factory=console_resolver_factory() if interactive else None,
     )
@@ -377,7 +385,7 @@ def _snapshot_vertical(path: Path) -> str:
 
 
 def _snapshot(result: DiscoveryResult) -> dict[str, object]:
-    return {
+    snapshot: dict[str, object] = {
         "vertical": result.vertical,
         "solution": result.solution_unique_name,
         "components": {
@@ -386,6 +394,9 @@ def _snapshot(result: DiscoveryResult) -> dict[str, object]:
         },
         "skipped": result.skipped,
     }
+    if result.agent is not None:
+        snapshot["agent"] = result.agent.to_json()
+    return snapshot
 
 
 def _load_snapshot(path: Path, vertical: str) -> DiscoveryResult:
@@ -409,6 +420,7 @@ def _load_snapshot(path: Path, vertical: str) -> DiscoveryResult:
         solution_id="",
         components=components,
         skipped=payload.get("skipped") or [],
+        agent=AgentMetadata.from_json(payload.get("agent")),
     )
 
 

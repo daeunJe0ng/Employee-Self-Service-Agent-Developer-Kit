@@ -73,6 +73,21 @@ DA_SHAPE_BY_COMPONENT_TYPE: dict[int, DaShape] = {
 # ``KnowledgeSourceComponent`` entries (see DA_SHAPE_BY_COMPONENT_TYPE), confirmed
 # against a real published ESS DA export.
 CONFIGURED_ON_AGENT: dict[int, str] = {
+    14: (
+        "File attachments are not carried in the package. Re-upload this file in "
+        "the agent's knowledge/attachment settings after import — the package "
+        "cannot carry the file's bytes. Its configuration is reproduced below."
+    ),
+    18: (
+        "Copilot settings are agent-level configuration, not a package component. "
+        "Re-apply these settings in the agent's configuration after import — your "
+        "values are reproduced below."
+    ),
+    19: (
+        "Evaluations (test cases) are not carried in the package. Re-create this "
+        "test in the agent's evaluation settings after import — its definition is "
+        "reproduced below."
+    ),
     20: (
         "Custom metric definitions are not carried in the package. Re-create this "
         "metric in the agent's analytics settings if you still need it — its "

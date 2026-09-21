@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from essmig.discovery import CaComponent, DiscoveryResult
-from essmig.merge import ComponentResult, Outcome
+from essmig.merge import _AGENT_SUFFIX, ComponentResult, Outcome
 from essmig.reference import BaselineComponent
 
 _BODY_LIMIT = 400
@@ -89,6 +89,10 @@ def migratability(result: ComponentResult) -> tuple[Migratability, str]:
     yet.
     """
     outcome = result.outcome
+    if result.suffix == _AGENT_SUFFIX:
+        if outcome is Outcome.MERGED:
+            return Migratability.MIGRATABLE, "carries onto the Declarative Agent automatically"
+        return Migratability.ACTION, "confirm which name/description the agent should keep"
     if result.deprecated:
         reasons = "; ".join(result.unsupported) or "an unsupported construct"
         return (
@@ -204,6 +208,10 @@ def render_markdown(
     if outcomes:
         lines += _migratability_summary(reported, outcomes)
 
+    agent_outcome = outcomes.get(_AGENT_SUFFIX)
+    if agent_outcome is not None or (result.agent is not None and result.agent.is_customized):
+        lines += _agent_section(result, agent_outcome)
+
     for change in _REPORTED:
         section = [entry for entry in reported if entry.change is change]
         if not section:
@@ -238,6 +246,51 @@ def _migratability_summary(
     for tier in _MIGRATABILITY_ORDER:
         lines.append(f"| {_MIGRATABILITY_HEADLINE[tier]} | {counts[tier]} |")
     return lines
+
+
+def _agent_section(result: DiscoveryResult, outcome: ComponentResult | None) -> list[str]:
+    """The agent's own name/description change — not a component, but a customization."""
+    agent = result.agent
+    lines = ["", "## Agent name & description", ""]
+    if outcome is not None:
+        tier, note = migratability(outcome)
+        lines.append(f"- Migration: **{_MIGRATABILITY_HEADLINE[tier]}** — {note}")
+        lines.append("")
+    if agent is None:
+        return lines
+    if agent.name_changed or (agent.name is not None and agent.baseline_name is not None):
+        lines.append("**Display name**")
+        lines.append("")
+        lines.append(f"- ESS baseline: `{agent.baseline_name}`")
+        lines.append(f"- Your version: `{agent.name}`")
+        lines.append("")
+    elif agent.name is not None:
+        lines += [f"- Your display name: `{agent.name}`", ""]
+    if agent.description_changed or (
+        agent.description is not None and agent.baseline_description is not None
+    ):
+        lines.append("**Description**")
+        lines.append("")
+        lines += _text_diff(agent.baseline_description or "", agent.description or "")
+        lines.append("")
+    elif agent.description is not None:
+        lines += ["**Description**", "", "```", agent.description, "```", ""]
+    return lines
+
+
+def _text_diff(before: str, after: str) -> list[str]:
+    """A fenced unified diff between two blocks of prose."""
+    diff = difflib.unified_diff(
+        before.splitlines(),
+        after.splitlines(),
+        fromfile="ESS baseline",
+        tofile="your version",
+        lineterm="",
+    )
+    body = list(diff)
+    if not body:
+        return ["_(no textual change)_"]
+    return ["```diff", *body, "```"]
 
 
 def _component_section(entry: ComponentDiff, outcome: ComponentResult | None) -> list[str]:
