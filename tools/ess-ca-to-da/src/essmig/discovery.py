@@ -34,6 +34,8 @@ Hard-won details that are easy to get wrong:
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -54,14 +56,18 @@ _SOLUTION_COMPONENTS_ENTITY = "solutioncomponents"
 _COMPONENT_LAYERS_ENTITY = "msdyn_componentlayers"
 _BOTCOMPONENTS_ENTITY = "botcomponents"
 _BOTCOMPONENT_ENTITY_NAME = "botcomponent"
-_BOTS_ENTITY = "bots"
-_BOT_ENTITY_NAME = "bot"
 
-# Attribute keys that carry the agent's display name / description in the ``bot``
-# row and its component-layer attributes. Tried in order so a schema difference
-# between environments degrades to "not detected" rather than a crash.
-_AGENT_NAME_KEYS = ("name", "displayname", "schemaname")
+# Attribute keys that carry the agent's display name / description on the
+# ``gpt.default`` botcomponent row and its component-layer attributes. Tried in
+# order so a schema difference between environments degrades to "not detected"
+# rather than a crash.
+_AGENT_NAME_KEYS = ("name", "displayname")
 _AGENT_DESCRIPTION_KEYS = ("description",)
+_AGENT_DEBUG_ENV = "ESSMIG_DEBUG_AGENT"
+# The agent's Overview name/description live on the ``gpt.default`` botcomponent —
+# the description in its own ``description`` column (a sibling of the ``data`` YAML,
+# which only carries displayName + instructions), not on the ``bot`` row.
+_AGENT_GPT_SUFFIX = "gpt.default"
 
 _OBJECT_ID_FIELD = "dependentcomponentobjectid"
 _ENTITY_NAME_FIELD = "dependentcomponententitylogicalname"
@@ -427,57 +433,101 @@ def _extract_dependents(response: Any) -> list[tuple[str, str]]:
 
 
 def _agent_metadata(client: DataverseClient, vertical: str) -> AgentMetadata | None:
-    """The agent's own name/description, effective and shipped-baseline.
+    """The agent's own display name / description, effective and shipped-baseline.
 
-    Reads the live ``bot`` row for the customer's effective values and the bot's
-    managed component layer for the shipped baseline, so a rename or re-description
-    can be told apart from an untouched agent. Deliberately best-effort: the exact
-    ``bot`` schema varies between environments, so any read failure degrades to
-    ``None`` (agent metadata simply not assessed) rather than aborting the migration.
+    The agent's Overview name and description live on the ``gpt.default``
+    botcomponent — the description in that row's own ``description`` column, which is
+    a *sibling* of the ``data`` YAML (``GptComponentMetadata`` carries only
+    ``displayName`` and ``instructions``). They are read here separately from the
+    per-component projection, which only sees ``data``.
+
+    The customer's *effective* values are the live botcomponent row; the shipped
+    *baseline* is that component's managed out-of-box layer (what ESS shipped), so a
+    rename or re-description can be told apart from an untouched agent.
+
+    Deliberately best-effort: it never restricts the row read with an unsafe
+    ``$select`` (a non-existent column would 400 and lose the whole read), and any
+    failure degrades to ``None`` rather than aborting the migration. Set
+    ``ESSMIG_DEBUG_AGENT=1`` to dump the attributes actually returned.
     """
-    schemaname = CA_AGENT_SCHEMANAMES[vertical]
-    try:
-        rows = client.query_all(
-            _BOTS_ENTITY,
-            select="botid,name,description,schemaname",
-            filter=f"schemaname eq '{schemaname}'",
-        )
-    except Exception:  # noqa: BLE001 - best-effort; never block the migration
+    prefix = CA_AGENT_SCHEMANAMES[vertical]
+    schemaname = f"{prefix}.{_AGENT_GPT_SUFFIX}"
+    component_id, row = _find_botcomponent_row(client, schemaname)
+    if component_id is None:
+        _agent_debug(f"no botcomponent row matched {schemaname}")
         return None
-    row = next((r for r in rows if isinstance(r, dict)), None)
-    if row is None:
-        return None
+
+    layers = _component_layers(client, component_id, _BOTCOMPONENT_ENTITY_NAME)
+    oob = [layer for layer in layers if _in_oob_solution(layer)]
+    baseline = _component_attributes(oob) if oob else {}
+    _agent_debug(f"row keys: {sorted(row)}; baseline keys: {sorted(baseline)}")
+    _agent_debug_values(row)
 
     metadata = AgentMetadata(
         name=_pick(row, _AGENT_NAME_KEYS),
         description=_pick(row, _AGENT_DESCRIPTION_KEYS),
+        baseline_name=_pick(baseline, _AGENT_NAME_KEYS) if baseline else None,
+        baseline_description=_pick(baseline, _AGENT_DESCRIPTION_KEYS) if baseline else None,
     )
-    bot_id = row.get("botid")
-    if isinstance(bot_id, str) and bot_id and bot_id != _EMPTY_GUID:
-        baseline = _agent_baseline(client, bot_id)
-        if baseline is not None:
-            metadata.baseline_name = _pick(baseline, _AGENT_NAME_KEYS)
-            metadata.baseline_description = _pick(baseline, _AGENT_DESCRIPTION_KEYS)
+    if metadata.name is None and metadata.description is None:
+        _agent_debug("gpt.default row carried no name/description under the known keys")
+        return None
     return metadata
 
 
-def _agent_baseline(client: DataverseClient, bot_id: str) -> dict[str, Any] | None:
-    """The shipped (managed OOB layer) attributes of the agent's ``bot`` row."""
+def _find_botcomponent_row(
+    client: DataverseClient, schemaname: str
+) -> tuple[str | None, dict[str, Any]]:
+    """The ``(botcomponentid, full row)`` for a botcomponent, matched by schema name.
+
+    Reads the whole row (no unsafe ``$select``) so the ``description`` column — the
+    agent's Overview description — comes back alongside ``name``.
+    """
     try:
-        layers = client.query_all(
+        rows = client.query_all(
+            _BOTCOMPONENTS_ENTITY, select=None, filter=f"schemaname eq '{schemaname}'"
+        )
+    except Exception:  # noqa: BLE001 - best-effort; never block the migration
+        return None, {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        component_id = row.get("botcomponentid")
+        if isinstance(component_id, str) and component_id and component_id != _EMPTY_GUID:
+            return component_id, row
+    return None, {}
+
+
+def _component_layers(
+    client: DataverseClient, object_id: str, entity_name: str
+) -> list[dict[str, Any]]:
+    """All component layers for a component (managed OOB base + customer overlay)."""
+    try:
+        return client.query_all(
             _COMPONENT_LAYERS_ENTITY,
             select=None,
             filter=(
-                f"msdyn_componentid eq '{bot_id}' and "
-                f"msdyn_solutioncomponentname eq '{_BOT_ENTITY_NAME}'"
+                f"msdyn_componentid eq '{object_id}' and "
+                f"msdyn_solutioncomponentname eq '{entity_name}'"
             ),
         )
-    except Exception:  # noqa: BLE001 - best-effort; baseline is optional
-        return None
-    oob = [layer for layer in layers if _in_oob_solution(layer)]
-    if not oob:
-        return None
-    return _component_attributes(oob)
+    except Exception:  # noqa: BLE001 - best-effort; layers are optional
+        return []
+
+
+def _agent_debug(message: str) -> None:
+    if os.environ.get(_AGENT_DEBUG_ENV):
+        print(f"[agent-metadata] {message}", file=sys.stderr)
+
+
+def _agent_debug_values(attributes: dict[str, Any]) -> None:
+    """Print any longish string columns — the description hides among these."""
+    if not os.environ.get(_AGENT_DEBUG_ENV):
+        return
+    for key, value in sorted(attributes.items()):
+        if isinstance(value, str) and len(value.strip()) > 30:
+            preview = value.strip().replace("\n", " ")[:80]
+            print(f"[agent-metadata]   {key}: {preview!r}", file=sys.stderr)
 
 
 def _pick(attributes: dict[str, Any], keys: tuple[str, ...]) -> str | None:

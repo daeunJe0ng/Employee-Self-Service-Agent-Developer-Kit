@@ -21,7 +21,7 @@ class FakeClient:
         members: list[str] | None = None,
         dependents: list[str] | None = None,
         owned: list[str] | None = None,
-        bot: dict[str, Any] | None = None,
+        gpt: dict[str, Any] | None = None,
     ) -> None:
         self._layers = layers
         self._members = members or []
@@ -30,7 +30,8 @@ class FakeClient:
         # existing tests see the pre-fix behaviour (the union collapses to one set).
         self._dependents = list(layers) if dependents is None else dependents
         self._owned = list(layers) if owned is None else owned
-        self._bot = bot
+        # The gpt.default botcomponent row that carries the agent's name/description.
+        self._gpt = gpt
         self.layer_queries: list[str] = []
 
     def query_all(
@@ -39,9 +40,11 @@ class FakeClient:
         del select
         if entity_set == "solutions":
             return [{"solutionid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}]
-        if entity_set == "bots":
-            return [self._bot] if self._bot is not None else []
         if entity_set == "botcomponents":
+            # The agent-metadata lookup asks for one component by exact schema name;
+            # the owned sweep asks for the whole family with startswith(...).
+            if filter is not None and filter.startswith("schemaname eq"):
+                return [self._gpt] if self._gpt is not None else []
             return [{"botcomponentid": component_id} for component_id in self._owned]
         if entity_set == "msdyn_componentlayers":
             assert filter is not None
@@ -261,15 +264,16 @@ def test_installed_targets_is_empty_when_no_ess_agent_is_installed() -> None:
 
 # --- agent name & description ------------------------------------------------
 
-_BOT_ID = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
-_AGENT_SCHEMA = "msdyn_copilotforemployeeselfservicehr"
+_GPT_ID = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+_AGENT_SCHEMA = "msdyn_copilotforemployeeselfservicehr.gpt.default"
 
 
-def _bot_row(name: str, description: str) -> dict[str, Any]:
+def _gpt_row(name: str, description: str) -> dict[str, Any]:
     return {
-        "botid": _BOT_ID,
+        "botcomponentid": _GPT_ID,
         "name": name,
         "description": description,
+        "componenttype": {"Value": 15},
         "schemaname": _AGENT_SCHEMA,
     }
 
@@ -282,8 +286,8 @@ def test_the_agents_name_and_description_are_read_with_their_baseline() -> None:
         schemaname=_AGENT_SCHEMA,
     )
     client = FakeClient(
-        {_BOT_ID: [baseline_layer]},
-        bot=_bot_row("Contoso People Helper", "Our tailored description."),
+        {_GPT_ID: [baseline_layer]},
+        gpt=_gpt_row("Contoso People Helper", "Our tailored description."),
     )
     result = discover(client, "hr")  # type: ignore[arg-type]
 
@@ -294,6 +298,6 @@ def test_the_agents_name_and_description_are_read_with_their_baseline() -> None:
     assert result.agent.description_changed is True
 
 
-def test_an_agent_with_no_bot_row_yields_no_metadata() -> None:
+def test_an_agent_with_no_gpt_component_yields_no_metadata() -> None:
     result = run({})
     assert result.agent is None
