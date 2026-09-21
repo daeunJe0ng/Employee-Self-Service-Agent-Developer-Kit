@@ -173,6 +173,25 @@ class FlightCheckRunner:
                 if self._target_matcher(r.checkpoint_id)
                 or r.checkpoint_id.endswith("-ERR")
             ]
+            # A target/profile run may register both a broad category
+            # function and a narrower single-purpose wrapper that re-runs the
+            # same underlying check (e.g. run_environment_checks already emits
+            # ENV-009 / ENV-CAPACITY-001, and the ENV-009 / ENV-CAPACITY-001
+            # members also pull run_preferred_solution_check / run_capacity_check).
+            # That double-execution yields byte-identical rows. Principle 7
+            # (flightcheck/AGENTS.md) guarantees a single check never emits two
+            # identical same-id rows, so collapsing exact duplicates here is
+            # safe and keeps every genuinely-distinct row (different status or
+            # evidence) intact. Order-preserving, first occurrence wins.
+            seen: set = set()
+            deduped: list[CheckResult] = []
+            for r in self.results:
+                key = (r.checkpoint_id, r.status, r.result, r.remediation)
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(r)
+            self.results = deduped
 
         # Build category summaries
         cat_map: dict[str, CategorySummary] = {}

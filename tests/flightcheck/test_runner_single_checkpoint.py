@@ -99,6 +99,55 @@ class TestTargetMatcherFiltering:
         assert [r.checkpoint_id for r in result.results] == ["WD-FLOW-002"]
 
 
+class TestDuplicateRowCollapse:
+    def test_identical_rows_from_two_functions_collapse_to_one(self) -> None:
+        # A profile/target run can register both a broad category function and
+        # a single-purpose wrapper that re-runs the same underlying check,
+        # yielding byte-identical rows. The matcher-filtered run must collapse
+        # them to one (the ENV-009 / ENV-CAPACITY-001 double-emit seen live).
+        dup = _row("ENV-009", "Environment", Status.FAILED.value)
+        runner = FlightCheckRunner(
+            scope="profile:workday-setup",
+            target_matcher=lambda cid: cid in {"ENV-001", "ENV-009"},
+        )
+        # Broad sweep emits ENV-001 and ENV-009; the dedicated wrapper emits
+        # an identical ENV-009 row.
+        runner.register(
+            "Environment",
+            _fn_returning(_row("ENV-001", "Environment"), dup),
+        )
+        runner.register("Environment", _fn_returning(_row("ENV-009", "Environment",
+                                                          Status.FAILED.value)))
+
+        result = runner.run()
+
+        ids = [r.checkpoint_id for r in result.results]
+        assert ids == ["ENV-001", "ENV-009"]
+        assert ids.count("ENV-009") == 1
+
+    def test_distinct_same_id_rows_are_kept(self) -> None:
+        # Rows sharing a checkpoint_id but differing in status/evidence are
+        # genuinely distinct and must NOT be collapsed.
+        runner = FlightCheckRunner(
+            scope="profile:p",
+            target_matcher=lambda cid: cid == "WD-FLOW-001",
+        )
+        row_pass = _row("WD-FLOW-001", "Workday", Status.PASSED.value)
+        row_fail = CheckResult(
+            checkpoint_id="WD-FLOW-001",
+            category="Workday",
+            priority=Priority.MEDIUM.value,
+            status=Status.FAILED.value,
+            description="WD-FLOW-001 check",
+            result="different evidence",
+        )
+        runner.register("Workday", _fn_returning(row_pass, row_fail))
+
+        result = runner.run()
+
+        assert len(result.results) == 2
+
+
 class TestErrSentinelRetention:
     def test_err_sentinel_retained_even_when_unmatched(self) -> None:
         runner = FlightCheckRunner(

@@ -340,6 +340,24 @@ def _print_checkpoint_list():
           "(e.g. WD-FLOW-002) runs the family and reports just that row.")
 
 
+def _print_profile_list():
+    """Print the registered Connect-facing profiles for --list-profiles.
+
+    Reads the static profile registry only — no run, no auth. Each profile is
+    a named set of checkpoint IDs/families the Connect Workday skill can run as
+    one gate.
+    """
+    from flightcheck import profiles
+
+    print("Registered validation profiles (run one with --profile <name>):")
+    print()
+    for prof in profiles.list_profiles():
+        print(f"  {prof.name}")
+        print(f"      {prof.description}")
+        print(f"      members: {', '.join(prof.members)}")
+        print()
+
+
 def _print_unknown_checkpoint(target):
     """Print a clear error naming the valid checkpoint IDs/families."""
     from flightcheck import registry
@@ -707,28 +725,62 @@ def _is_native_no_dataverse(config: dict, env_url: str) -> bool:
     return str(active.get("releaseLine") or "").casefold() == "da"
 
 
-def _run_single_checkpoint(args):
-    """Run exactly one checkpoint (or family) by ID and report only its result.
+def _run_single_checkpoint(args, profile_name=None):
+    """Run one checkpoint/family, or a named profile, and report its results.
 
-    Resolves the target via the registry, initialises ONLY the clients/config
+    Resolves the target(s) via the registry, initialises ONLY the clients/config
     its transitive prerequisite closure declares (so an Entra-only checkpoint
     runs with no Dataverse endpoint configured), registers the prerequisite +
     owning category functions in canonical order to hydrate shared state, then
     relies on the runner's target filter to keep just the requested rows.
 
-    Always calls sys.exit(): 0 when the checkpoint passes / is manual /
-    not-configured, 1 when it fails or errors, 2 for an unknown ID.
+    When ``profile_name`` is set, the plan is the union of every member's
+    closure and the matcher keeps rows owned by any member (see
+    ``flightcheck/profiles.py``). A profile run also emits the Connect Workday
+    host-neutral result contract alongside results.json.
+
+    Always calls sys.exit(): 0 when everything passes / is manual /
+    not-configured, 1 when something fails or errors, 2 for an unknown target.
     """
     from flightcheck import registry
 
-    target = args.checkpoint
-    spec = registry.resolve(target)
-    if spec is None:
-        _print_unknown_checkpoint(target)
-        sys.exit(2)
+    if profile_name is not None:
+        from flightcheck import profiles
 
-    plan = registry.transitive_requirements(target)
-    needed = plan.clients
+        try:
+            pplan = profiles.resolve_plan(profile_name)
+        except profiles.ProfileError as exc:
+            print(f"ERROR: {exc}")
+            sys.exit(2)
+        target = f"profile:{profile_name}"
+        scope_label = f"profile:{profile_name}"
+        _matcher = pplan.matcher
+        needed = pplan.clients
+        requires_config = pplan.requires_config
+        requires_dataverse_endpoint = pplan.requires_dataverse_endpoint
+        ordered_fns = pplan.ordered_fns
+        banner_kind = "Profile"
+        banner_name = pplan.profile.name
+        banner_category = pplan.profile.title
+    else:
+        target = args.checkpoint
+        spec = registry.resolve(target)
+        if spec is None:
+            _print_unknown_checkpoint(target)
+            sys.exit(2)
+        plan = registry.transitive_requirements(target)
+        scope_label = f"checkpoint:{target}"
+
+        def _matcher(cid, _t=target):
+            return registry.matches(_t, cid)
+
+        needed = plan.clients
+        requires_config = plan.requires_config
+        requires_dataverse_endpoint = plan.requires_dataverse_endpoint
+        ordered_fns = plan.ordered_fns
+        banner_kind = "Single Checkpoint"
+        banner_name = target
+        banner_category = spec.category_label
 
     # --- Per-checkpoint config / Dataverse-endpoint gate (not the global one) ---
     config = {}
@@ -736,12 +788,12 @@ def _run_single_checkpoint(args):
     if os.path.exists(config_path):
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
-    elif plan.requires_config:
+    elif requires_config:
         print("ERROR: .local/config.json not found. Run /setup first.")
         sys.exit(1)
 
     env_url = args.environment_url or config.get("dataverseEndpoint", "")
-    if plan.requires_dataverse_endpoint and not env_url:
+    if requires_dataverse_endpoint and not env_url:
         print("ERROR: No dataverseEndpoint in .local/config.json.")
         sys.exit(1)
 
@@ -749,10 +801,10 @@ def _run_single_checkpoint(args):
     if not quiet_auth:
         print()
         print("=" * 64)
-        print("  ESS FLIGHTCHECK — Single Checkpoint")
+        print(f"  ESS FLIGHTCHECK — {banner_kind}")
         print("=" * 64)
-        print(f"  Checkpoint:  {target}")
-        print(f"  Category:    {spec.category_label}")
+        print(f"  {'Profile' if profile_name else 'Checkpoint'}:  {banner_name}")
+        print(f"  Category:    {banner_category}")
         if env_url:
             print(f"  Environment: {env_url}")
         print(f"  Clients:     {', '.join(sorted(needed)) or '(none)'}")
@@ -902,8 +954,8 @@ def _run_single_checkpoint(args):
 
     # --- Build runner with the target filter (hydrate-then-filter) ---
     runner = FlightCheckRunner(
-        scope=f"checkpoint:{target}",
-        target_matcher=lambda cid: registry.matches(target, cid),
+        scope=scope_label,
+        target_matcher=_matcher,
     )
     runner.config = config
     runner.env_url = env_url
@@ -924,7 +976,7 @@ def _run_single_checkpoint(args):
     # Consent is resolved on the --scope path only. If an INFRA checkpoint is
     # ever registered, wire _apply_runtime_reachability_consent here then.
 
-    for label, fn in plan.ordered_fns:
+    for label, fn in ordered_fns:
         runner.register(label, fn)
 
     if not quiet_auth:
@@ -934,8 +986,28 @@ def _run_single_checkpoint(args):
     _print_prioritized_summary(result, verbose_manual=True)
     save_results(result, args.output)
 
+    # Connect Workday consumes a host-neutral result contract (see
+    # flightcheck/connect_contract.py). Emit it alongside results.json for
+    # profile runs and any explicit connect invocation so the skill has a
+    # stable shape to read; best-effort, never affects the run.
+    if profile_name is not None or getattr(args, "invocation_source", None) == "connect":
+        try:
+            from flightcheck import connect_contract
+
+            _payload = connect_contract.to_connect_payload(
+                result, profile=profile_name
+            )
+            os.makedirs(args.output, exist_ok=True)
+            with open(
+                os.path.join(args.output, "connect-results.json"),
+                "w", encoding="utf-8",
+            ) as _cf:
+                json.dump(_payload, _cf, indent=2)
+        except Exception:  # noqa: BLE001 — contract emit must never break the run
+            pass
+
     if not result.results:
-        print(f"\nNOTE: checkpoint {target} produced no result rows (the owning "
+        print(f"\nNOTE: {target} produced no result rows (the owning "
               "check may have skipped it for this tenant state).")
         sys.exit(1)
 
@@ -992,7 +1064,7 @@ def _run_single_checkpoint(args):
                 tenant_id=tenant_id or "",
                 tenant_name=tenant_name,
                 agent_id=_active_agent.get("botId", ""),
-                scope=f"checkpoint:{target}",
+                scope=scope_label,
                 agent_count=len(_agents),
                 invocation_source=_inv_source,
             )
@@ -1078,6 +1150,18 @@ def main():
              "run), then exit.",
     )
     parser.add_argument(
+        "--profile",
+        help="Run a named Connect-facing validation profile (a set of "
+             "checkpoints), e.g. workday-setup or workday. Emits the Connect "
+             "Workday host-neutral result contract to connect-results.json. "
+             "Mutually exclusive with --scope and --checkpoint.",
+    )
+    parser.add_argument(
+        "--list-profiles", action="store_true",
+        help="List the registered validation profiles and their members (no "
+             "run), then exit.",
+    )
+    parser.add_argument(
         "--no-telemetry", action="store_true",
         help="Don't emit anonymous FlightCheck outcome telemetry",
     )
@@ -1143,12 +1227,24 @@ def main():
         _print_checkpoint_list()
         sys.exit(0)
 
+    if args.list_profiles:
+        _print_profile_list()
+        sys.exit(0)
+
     if args.list_targets:
         # Discovery-only mode for the skill-driven picker: authenticate the
         # one client we need, print candidate targets as JSON, and exit. No
         # checks run. Never touches --scope / --checkpoint behavior.
         _list_targets(args)
         sys.exit(0)
+
+    if args.profile:
+        if args.scope is not None or args.checkpoint:
+            print("ERROR: --profile is mutually exclusive with --scope and "
+                  "--checkpoint.")
+            sys.exit(2)
+        _run_single_checkpoint(args, profile_name=args.profile)
+        return  # _run_single_checkpoint always exits; defensive only.
 
     if args.checkpoint:
         if args.scope is not None:
