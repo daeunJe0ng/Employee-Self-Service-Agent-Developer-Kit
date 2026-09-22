@@ -10,6 +10,7 @@ All operations are relative to the agent folder in .local/config.json.
 Usage:
     python scripts/checkpoint.py "reason for checkpoint"
     python scripts/checkpoint.py --revert
+    python scripts/checkpoint.py --revert-reason "reason for checkpoint"
     python scripts/checkpoint.py --baseline
     python scripts/checkpoint.py --list
 """
@@ -153,6 +154,40 @@ def cmd_revert(agent_dir):
     print(f"Reverted to checkpoint {target}.")
 
 
+def cmd_revert_reason(agent_dir, reason):
+    """Restore the newest checkpoint whose metadata reason exactly matches."""
+    checkpoints_dir = get_checkpoints_dir(agent_dir)
+    if not os.path.exists(checkpoints_dir):
+        print("ERROR: No checkpoints exist. Nothing to revert.")
+        sys.exit(1)
+
+    matches = []
+    for entry in os.listdir(checkpoints_dir):
+        checkpoint_dir = os.path.join(checkpoints_dir, entry)
+        if not entry.isdigit() or not os.path.isdir(checkpoint_dir):
+            continue
+        meta_path = os.path.join(checkpoint_dir, "_meta.json")
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if meta.get("reason") == reason:
+            matches.append(int(entry))
+
+    if not matches:
+        print(f'ERROR: No checkpoint found with reason: "{reason}"')
+        sys.exit(1)
+
+    save_num = create_checkpoint(agent_dir, "auto-save before named revert")
+    print(f"Checkpoint {save_num} created: auto-save before named revert")
+
+    target = max(matches)
+    source_dir = os.path.join(checkpoints_dir, str(target))
+    restore_from(agent_dir, source_dir)
+    print(f'Reverted to checkpoint {target}: "{reason}".')
+
+
 def cmd_baseline(agent_dir):
     baseline_dir = get_baseline_dir(agent_dir)
     if not os.path.exists(baseline_dir):
@@ -210,6 +245,8 @@ def main():
         print("Usage:")
         print('  checkpoint.py "reason"   — Create a checkpoint')
         print("  checkpoint.py --revert   — Revert to last checkpoint")
+        print('  checkpoint.py --revert-reason "reason" '
+              "— Revert to the newest checkpoint with that exact reason")
         print("  checkpoint.py --baseline — Restore original environment state")
         print("  checkpoint.py --list     — List all checkpoints")
         sys.exit(1)
@@ -218,6 +255,11 @@ def main():
 
     if arg == "--revert":
         cmd_revert(agent_dir)
+    elif arg == "--revert-reason":
+        if len(sys.argv) < 3:
+            print("ERROR: --revert-reason requires an exact checkpoint reason.")
+            sys.exit(1)
+        cmd_revert_reason(agent_dir, " ".join(sys.argv[2:]))
     elif arg == "--baseline":
         cmd_baseline(agent_dir)
     elif arg == "--list":
