@@ -151,12 +151,13 @@ unavailable, tell the maker to reload the VS Code window, rerun
     explain that effect and obtain explicit confirmation immediately before
     calling it, even when the maker's initial request already said to delete or
     reset all landing-page configuration.
-22. When the maker asks what a setting controls for employees, follow
+22. When the maker asks what a setting controls for end users, follow
     **Explain landing-page settings**. Use Microsoft Learn for end-user behavior
     only; use this skill and the MCP tool contracts for configuration behavior.
 23. When the maker asks what they can do, asks for help, or asks whether the
     skill can suggest changes, follow **Describe landing-page capabilities**.
     Include context-grounded suggested drafts as a first-class capability.
+24. After every successful `open_*` call, follow **Widget supporting guidance** to explain the setting, Publish timing, and the actual opening state. Use "end users" in maker-facing guidance.
 
 ## Resolve the target
 
@@ -322,13 +323,13 @@ The page describes another administration surface. Do not use or repeat its
 navigation, upload, save, role, or configuration instructions. This skill and
 the MCP tool contracts define how configuration is performed here.
 
-| Setting | What it controls for employees |
+| Setting | What it controls for end users |
 |---|---|
-| Categorized starter prompts | Show common ways to engage with the agent, communicate its capabilities, and guide employees into the right scenarios. Tenant-level categorized prompts override starter prompts from Copilot Studio. |
-| Accent colors | Style buttons, links, chat bubbles, and loading indicators in light and dark themes. Default Copilot colors apply when unset. |
+| Categorized starter prompts | Show common ways to engage with the agent, communicate its capabilities, and guide end users into the right scenarios. Tenant-level categorized prompts override starter prompts from Copilot Studio. |
+| Accent colors | Customize the agent's look and feel in light and dark themes. Default Copilot colors apply when unset. |
 | Quick links | Surface important tenant resources directly on the landing page. No quick links appear when the list is empty. |
-| Stay up to date | Show a personalized carousel of actionable cards for in-progress ticket status, required follow-ups, and time-sensitive tasks. Employees can select a card to start a related conversation. Cards come from configured ticket-related sources and do not create or modify tickets. |
-| Quick Access | Show personalized, high-frequency information cards, such as time-off balance/status, upcoming paid holidays, and service anniversaries. Employees can select a card to start a conversation. |
+| Stay up to date | Show a personalized carousel of actionable cards for in-progress ticket status, required follow-ups, and time-sensitive tasks. End users can select a card to start a related conversation. Cards come from configured ticket-related sources and do not create or modify tickets. |
+| Quick Access | Show personalized, high-frequency information cards, such as time-off balance/status, upcoming paid holidays, and service anniversaries. End users can select a card to start a conversation. |
 
 ## Describe landing-page capabilities
 
@@ -336,7 +337,7 @@ When the maker asks what they can do, asks for landing-page help, or asks for
 available capabilities, explain that this skill can:
 
 - summarize the current landing-page configuration and explain what each
-  setting controls for employees;
+  setting controls for end users;
 - open Accent Color, Quick Links, or Starter Prompts for interactive editing;
 - suggest context-grounded changes, open the complete proposal as an
   unpublished widget draft, and let the maker review it before publishing;
@@ -363,9 +364,9 @@ Use this flow for a bare `/landing-page` invocation and whole-page requests such
 
    | Setting | Current state | Purpose |
    |---|---|---|
-   | Accent color | {accent color state} | Styles buttons, links, chat bubbles, and loading indicators. |
-   | Quick links | {quick links state} | Gives employees direct access to important resources. |
-   | Starter prompts | {starter prompts state} | Shows common ways to engage with the agent and guides employees into supported scenarios. |
+   | Accent color | {accent color state} | Customizes the agent's look and feel in light and dark themes. |
+   | Quick links | {quick links state} | Gives end users direct access to important resources. |
+   | Starter prompts | {starter prompts state} | Shows common ways to engage with the agent and guides end users into supported scenarios. |
    | Stay up to date | {stay up to date state} | Shows personalized ticket updates, follow-ups, and time-sensitive tasks. |
    | Quick Access | {quick access state} | Shows personal information, such as time-off balances, upcoming holidays, and service anniversaries. |
 
@@ -418,7 +419,7 @@ Always open the accent-color widget when the maker asks to see or identify their
 
 1. Resolve the target and establish configuration existence using the normal target-resolution flow. Reuse established existence; do not read the configuration again solely as a preflight.
 2. Call `open_accent_color` with `titleId` only and `draft` omitted. Open it whether custom colors are configured or `branding`/`theming` is absent, null, or empty. Leave default-color rendering to the widget, including when only one theme has a custom color.
-3. Briefly explain that the widget shows the saved colors or the default Copilot colors for themes without a configured accent color. Viewing is read-only: do not synthesize a draft, run contrast validation, or call `update_agent_config`. The saved branding remains unchanged until the maker explicitly edits and selects Publish.
+3. Follow **Widget supporting guidance**, explaining that the widget shows the saved colors or the default Copilot colors for themes without a configured accent color. Viewing is read-only: do not synthesize a draft, run contrast validation, or call `update_agent_config`. The saved branding remains unchanged until the maker explicitly edits and selects Publish.
 
 If the entire landing-page configuration is missing, follow **Create or recreate missing configuration**, including confirmation before initialization for this read-only request, then resume opening the widget.
 
@@ -442,6 +443,32 @@ For Starter Prompts, an absent or empty saved `pivots` array is an empty baselin
 Use the complete surface-specific draft object for a clear preview: `draft: { "branding": { "theming": [] } }`, `draft: { "quickLinksConfig": { "quickLinks": [] } }`, or `draft: { "pivots": [] }`. Omitting `draft` preserves existing values, subject to the Starter Prompts default-suggestion behavior above.
 
 A request to clear or reset a section is an exact deterministic change. Obtain the required confirmation and call `update_agent_config` directly with the empty section. Open a clear preview only when the maker explicitly requests a preview or review of the removal before publishing.
+
+## Widget supporting guidance
+
+After a widget opens successfully, give its two-sentence introduction below, followed by one relevant state paragraph. Write brief prose that complements the widget. Keep displayed values, contrast scores, and editing controls in the widget; describe accent colors through the agent's general look and feel. Use "end users" and "suggested prompts" in the supporting copy.
+
+| Widget tool | Introduction |
+|---|---|
+| `open_accent_color` | Choose light and dark accent colors to give your agent a look that matches your organization. When you publish changes, end users will see them reflected in the agent within a few hours. |
+| `open_quick_links` | Add, edit, and arrange links to help end users reach important resources from your agent's landing page. When you publish changes, end users will see them reflected in the agent within a few hours. |
+| `open_starter_prompts` | Organize suggested prompts into categories to help end users discover what your agent can do. When you publish changes, end users will see them reflected in the agent within a few hours. |
+
+Publish saves configuration; end-user visibility can take a few hours, as documented in `src/reference/ess-docs/customization/customize.md`. Opening the widget and editing its draft do not publish changes.
+
+Choose state text from the consumed opener result and the supplied `draft`, following **Widget opening state**. Supplied drafts take precedence over empty-baseline messages. If the opening state cannot be established, explain that limitation without guessing which defaults or saved values are displayed.
+
+| Opening state | State paragraph |
+|---|---|
+| Accent Color: `draft` omitted; neither theme has a custom color | No custom accent colors are configured, so the widget shows the default light and dark theme colors. You can keep these defaults or choose your own colors and review them before publishing. |
+| Quick Links: `draft` omitted; saved links are absent or empty | No quick links are configured yet. Add the names and addresses of resources you want end users to find here, and arrange them in the order you'd like them to appear. |
+| Starter Prompts: `draft` omitted; saved `pivots` are absent or empty | The widget shows default starter prompts to help you get started. These haven't been published yet. You can edit the prompts and categories, then select **Publish** when you're ready. If you'd like, I can also suggest starter prompts based on your agent's capabilities. |
+| Any widget: a supplied non-empty draft | The widget shows proposed changes that haven't been published. Review and adjust them, then select **Publish** when you're ready to apply them. |
+| Any widget: saved values with `draft` omitted | The widget shows your saved settings. You can review and adjust them here; your edits stay unpublished until you select **Publish**. |
+
+For a single configured accent-color theme, identify which theme uses a saved color and which uses the default. For an explicit empty draft, explain the specific previewed effect: resetting accent colors to defaults, clearing Quick Links, or clearing Starter Prompts. Default starter-prompt suggestions are suppressed for an explicit empty draft. Describe supplied suggestions as unpublished proposals, including when nothing is saved yet.
+
+The offer to suggest starter prompts is an invitation. When the maker accepts, follow **Gather context for suggested content** before generating them.
 
 ## Gather context for suggested content
 
@@ -580,8 +607,7 @@ values.
    }
    ```
 
-5. Tell the maker that the widget contains unpublished edits and that Publish
-   applies them. The opener performs one server read and does not write.
+5. Follow **Widget supporting guidance** with the applicable unpublished-proposal or explicit-empty-draft state. The opener performs one server read and does not write.
 6. Let the widget make the first `update_agent_config` call when the maker selects Publish. Do not issue a model-driven update after opening the widget unless a later explicit chat request authorizes an operation through **Use widget context**.
 
 Drafts contain mutable wire fields only. Exclude `titleId`, `hoverColor`, `activeColor`, `quickLinksConfig.lastUpdatedAt`, and widget row keys. Preserve explicit empty arrays: `theming: []`, `quickLinks: []`, and `pivots: []` preview section resets. An explicit starter-prompts `draft: { "pivots": [] }` previews an empty list and suppresses default suggestions. Calling `open_starter_prompts` with `draft` omitted opens existing values, or localized default draft suggestions when the saved baseline is empty. Follow **Widget opening state** for each baseline/draft combination.
@@ -683,9 +709,7 @@ new value for each affected section. Omit every unaffected section.
 
 ## Branding
 
-Accent colors control end-user styling for buttons, links, chat bubbles, and
-loading indicators in light and dark themes. Default Copilot colors apply when
-branding is unset.
+Accent colors customize the agent's look and feel in light and dark themes. Default Copilot colors apply when branding is unset.
 
 For requests to see the current or default colors, follow **View accent colors**. The steps below apply to requests to change colors.
 
@@ -740,9 +764,7 @@ A direct branding reset submits `branding: { "theming": [] }` after confirmation
 
 ## Quick links
 
-Quick links give employees direct access to important tenant resources from the
-landing page. The presence of quick-link entries controls whether quick links
-appear.
+Quick links give end users direct access to important tenant resources from the landing page. The presence of quick-link entries controls whether quick links appear.
 
 Validate the complete replacement array before writing:
 
@@ -768,13 +790,9 @@ When the maker explicitly requests a clear preview, pass `draft: { "quickLinksCo
 
 ## Starter prompts
 
-Categorized starter prompts show employees common ways to engage with the agent
-and guide them into the right scenarios. These tenant-level prompts override
-starter prompts configured in Copilot Studio.
+Categorized starter prompts show end users common ways to engage with the agent and guide them into the right scenarios. These tenant-level prompts override starter prompts configured in Copilot Studio.
 
-When `open_starter_prompts` is called with `draft` omitted and the saved `pivots` baseline is empty or absent, the widget opens localized default draft suggestions. The tool returns the agent's `schemaName`, which selects those suggestions: an HR or IT agent opens with the single category matching its vertical, and any other agent opens with both the human-resources and IT-support categories. Show the following message only for this empty-baseline/omitted-draft combination:
-
-> No starter prompts are configured yet, so the editor is showing default draft suggestions. You can edit and publish them, or publish them as-is.
+When `open_starter_prompts` is called with `draft` omitted and the saved `pivots` baseline is empty or absent, the widget opens localized default draft suggestions. The tool returns the agent's `schemaName`, which selects those suggestions: an HR or IT agent opens with the single category matching its vertical, and any other agent opens with both the human-resources and IT-support categories. Use the default-starter-prompts paragraph in **Widget supporting guidance** only for this empty-baseline/omitted-draft combination.
 
 A supplied non-empty draft opens those suggestions whether the saved baseline is empty or populated. A supplied `draft: { "pivots": [] }` opens an empty proposal and suppresses default suggestions; with saved prompts, this previews clearing them. With a populated baseline and `draft` omitted, the editor opens the existing saved prompts. The saved baseline remains unchanged until Publish.
 
@@ -793,12 +811,12 @@ Add, remove, and reorder operations follow **Fresh read-modify-write** for direc
 The insight-card section contains both settings:
 
 - **Stay up to date** surfaces personalized, actionable cards for in-progress
-  ticket status, required follow-ups, and time-sensitive tasks. Employees can
+  ticket status, required follow-ups, and time-sensitive tasks. End users can
   select a card to start a related conversation. The cards use configured
   ticket-related sources and do not create or modify tickets.
 - **Quick Access** surfaces high-frequency personal information, such as
   time-off balance/status, upcoming paid holidays, and service anniversaries.
-  Employees can select a card to start a conversation.
+  End users can select a card to start a conversation.
 
 For a partial toggle change, follow **Fresh read-modify-write** and preserve the other toggle from that fresh result. Submit both values together:
 
