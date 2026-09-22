@@ -38,7 +38,7 @@ def test_lifecycle_runner_requires_reverification_and_rollback() -> None:
         encoding="utf-8"
     )
 
-    assert "live-re-verify" in runner
+    assert "Live re-verification on resume" in runner
     assert "permission-gate.md" in runner
     assert "--revert-reason" in runner
     assert "rollbackPushGlob" in runner
