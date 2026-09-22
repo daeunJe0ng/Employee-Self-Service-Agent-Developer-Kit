@@ -1119,20 +1119,84 @@ def update_baseline_scoped(agent_dir, only_globs):
                 pass
 
 
-def _minimalbot_push(config, dry_run=False):
+def _warn_minimalbot_non_eval_changes(agent_dir):
+    """Report pending non-evaluation changes the MinimalBot push cannot deploy.
+
+    MinimalBot (Dataverse-free) push handles evaluation components only. Rather
+    than silently dropping topic/workflow/template-config edits, surface them so
+    the maker knows they still require a Dataverse-backed environment.
+    """
+    baseline_dir = os.path.join(agent_dir, ".baseline")
+    if not os.path.isdir(baseline_dir):
+        return
+    try:
+        changed, new, deleted = compute_diff(
+            collect_files(baseline_dir), collect_files(agent_dir))
+    except OSError:
+        return
+    non_eval = sorted({
+        f for f in (*changed, *new, *deleted)
+        if classify_path(f)
+        and not f.replace("\\", "/").startswith("evaluations/")
+    })
+    if not non_eval:
+        return
+    print(
+        "WARNING: the following non-evaluation change(s) will NOT be pushed "
+        "(Dataverse-free agents support evaluation components only):"
+    )
+    for path in non_eval[:20]:
+        print(f"  - {path}")
+    if len(non_eval) > 20:
+        print(f"  ... and {len(non_eval) - 20} more")
+
+
+def _minimalbot_push(
+    config,
+    *,
+    dry_run=False,
+    force_delete=False,
+    repair_mode=False,
+    only_globs=None,
+):
     """Push evaluation sets to a Dataverse-free MinimalBot agent.
 
-    Uses the TEST Power Platform MinimalBot components API. Only evaluation
-    components are supported for MinimalBot agents today; other component
-    types (topics, workflows) still require a Dataverse-backed environment.
+    Uses the Power Platform MinimalBot components API on the agent's ring (see
+    :mod:`minimalbot_evaluation`). Only evaluation components are supported for
+    MinimalBot agents today; other component types (topics, workflows) still
+    require a Dataverse-backed environment. Destructive/scoped/repair flags are
+    rejected or reported rather than silently ignored, so a ``--force-delete``
+    never turns into a duplicate insert.
     """
     agent_dir = config["agent"]["folder"]
     if not os.path.exists(agent_dir):
         print(f"ERROR: Agent folder not found: {agent_dir}")
         sys.exit(1)
 
-    print("MinimalBot agent detected (no Dataverse endpoint).")
-    print("Pushing evaluations via the TEST Power Platform MinimalBot API...")
+    if repair_mode:
+        print(
+            "ERROR: --repair applies to Dataverse flow registration and is not "
+            "supported for Dataverse-free (MinimalBot) agents. No request was "
+            "made."
+        )
+        sys.exit(1)
+    if force_delete:
+        print(
+            "ERROR: --force-delete is not supported for Dataverse-free "
+            "(MinimalBot) agents; evaluation components cannot be deleted "
+            "through this path yet. No request was made."
+        )
+        sys.exit(1)
+    if only_globs:
+        print(
+            "NOTE: --only/--only-from scoping is ignored for MinimalBot agents; "
+            "all evaluation sets under evaluations/ are pushed."
+        )
+
+    _warn_minimalbot_non_eval_changes(agent_dir)
+
+    print("MinimalBot agent detected (Dataverse-free).")
+    print("Pushing evaluations via the Power Platform MinimalBot API...")
     try:
         client = MinimalBotEvaluationClient.from_config(config)
         if not dry_run:
@@ -1173,10 +1237,16 @@ def main():
     config = load_config()
 
     # Dataverse-free MinimalBot agents cannot use the Dataverse Web API below.
-    # Route evaluation pushes through the TEST Power Platform MinimalBot
-    # components API instead (see scripts/minimalbot_evaluation.py).
+    # Route evaluation pushes through the Power Platform MinimalBot components
+    # API on the agent's ring instead (see scripts/minimalbot_evaluation.py).
     if is_minimalbot(config):
-        return _minimalbot_push(config, dry_run=dry_run)
+        return _minimalbot_push(
+            config,
+            dry_run=dry_run,
+            force_delete=force_delete,
+            repair_mode=repair_mode,
+            only_globs=only_globs,
+        )
 
     agent_dir = config["agent"]["folder"]
     env_url = config["dataverseEndpoint"]

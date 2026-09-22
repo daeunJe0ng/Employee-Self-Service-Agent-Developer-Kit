@@ -649,6 +649,10 @@ def write_config(agent_info, slug, output_dir, template_configs_discovered,
     }
     if environment_id:
         config["environmentId"] = environment_id
+    elif agent_entry.get("environmentId"):
+        # Mirror the active agent's own value rather than a stale top-level
+        # environmentId that may belong to a previously onboarded agent.
+        config["environmentId"] = agent_entry["environmentId"]
     elif existing.get("environmentId"):
         config["environmentId"] = existing["environmentId"]
 

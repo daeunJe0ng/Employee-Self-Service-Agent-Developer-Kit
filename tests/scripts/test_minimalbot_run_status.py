@@ -12,7 +12,6 @@ These cover ``list_test_runs`` and ``get_test_run`` on
 from __future__ import annotations
 
 import argparse
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -80,7 +79,7 @@ def test_get_test_run_hits_testruns_run_id():
     result = client.get_test_run("r1")
     assert result["state"] == "Completed"
     url = client.calls[0]["url"]  # type: ignore[attr-defined]
-    assert f"/api/makerevaluation/testruns/r1" in url
+    assert "/api/makerevaluation/testruns/r1" in url
     assert "minimalBots" not in url
 
 

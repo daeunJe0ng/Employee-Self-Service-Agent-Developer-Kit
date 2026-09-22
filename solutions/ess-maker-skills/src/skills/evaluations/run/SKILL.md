@@ -114,6 +114,12 @@ whose status is `Connected`.
   **Retry connection discovery** when ready, then stop. On their next turn,
   rerun `list-connections`.
 
+> **Dataverse-free (MinimalBot) agents:** `list-connections` is not wired for
+> these agents. `run` auto-selects the single connected `shared_microsoftcopilotstudio`
+> profile in the environment; if selection is ambiguous, pass
+> `--mcs-connection-id` explicitly. Do not instruct the maker to run
+> `list-connections` for a Dataverse-free agent.
+
 Every run must include a validated `mcsConnectionId`; do not start an
 anonymous evaluation run.
 
@@ -186,7 +192,7 @@ First show:
   or configured grader when available; otherwise label the default 95% target
   as a reporting target, not an API value.
 
-Then present:
+Then analyze and present:
 
 1. **Results by scenario group** - render every row returned in
    `analysis.scenarioGroups` using this exact table:
@@ -198,9 +204,21 @@ Then present:
    reliable finer-grained scenario metadata. Never omit this table merely
    because it contains one row; use that fallback rather than inventing
    categories.
-2. **Detailed evidence** - retain per-test-case state, every metric type and
+2. **Failure analysis - grouped by observed cause** - render every row returned
+   in `analysis.failureGroups` using this exact table:
+
+   > | # | Observed cause | Cases | Owner | Suggested action | Representative evidence |
+   > |---:|---|---:|---|---|---|
+
+   The script groups failed cases using metric status/data plus `errorReason`
+   and `aiResultReason`. Use its returned category, counts, evidence, and
+   suggested action without replacing them with unstructured bullets. These
+   are observed failure patterns, not proven root causes. Never invent an
+   owner; the script returns `Unassigned` when ownership is unavailable.
+3. **Detailed evidence** - retain per-test-case state, every metric type and
    status, error/AI-result reasons, and metric data returned by the API.
 
+End with the strongest evidence-based pattern and the next corrective action.
 Do not claim promotion readiness unless the user has configured a promotion
 threshold and the run clears it.
 

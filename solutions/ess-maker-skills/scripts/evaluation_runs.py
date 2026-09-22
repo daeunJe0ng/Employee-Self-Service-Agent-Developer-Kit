@@ -986,9 +986,10 @@ def _minimalbot_command(args: argparse.Namespace, config: dict[str, Any]) -> int
     """Handle evaluation subcommands for Dataverse-free MinimalBot agents.
 
     ``list-sets``, ``run``, ``list-runs``, and ``results`` are supported on the
-    TEST ring. Run history and results use the standard Power Platform
-    ``makerevaluation/testruns`` API (not the MinimalBot components API);
-    ``list-connections`` is not wired for the test ring.
+    agent's ring (derived from ``powerPlatformApiEndpoint``). Run history and
+    results use the standard Power Platform ``makerevaluation/testruns`` API
+    (not the MinimalBot components API); ``list-connections`` is not wired for
+    MinimalBot agents.
     """
     client = MinimalBotEvaluationClient.from_config(config)
     client.authenticate()
@@ -1031,7 +1032,7 @@ def _minimalbot_command(args: argparse.Namespace, config: dict[str, Any]) -> int
                 bot_id,
                 test_set_id=str(result.get("testSetId", "")) or None,
                 run_id=str(args.run_id or "") or None,
-                agent_backend="cosmos",
+                agent_backend=getattr(client, "agent_backend", None),
             )
         _print_json(result)
         return 0
@@ -1067,8 +1068,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         config = load_config()
-        # Dataverse-free MinimalBot agents use the TEST Power Platform
-        # MinimalBot API instead of the prod Dataverse-backed run path.
+        # Dataverse-free MinimalBot agents use the Power Platform MinimalBot
+        # components API on their own ring instead of the Dataverse-backed path.
         if is_minimalbot(config):
             return _minimalbot_command(args, config)
         client, environment_id, bot_id, agent_folder = _runtime(config)

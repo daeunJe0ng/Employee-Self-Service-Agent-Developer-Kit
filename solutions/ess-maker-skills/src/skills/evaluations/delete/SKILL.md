@@ -152,6 +152,12 @@ evaluation deletions — children are deleted before parents.
 
 **If the push fails:** show the error and offer retry or revert.
 
+> **Dataverse-free (MinimalBot) agents:** eval-set deletion is not yet
+> supported for these agents. `push.py --force-delete` is refused with a clear
+> message rather than silently adding a duplicate set. Explain to the maker that
+> obsolete evaluation sets must currently be cleaned up in Copilot Studio
+> directly for Dataverse-free agents.
+
 ## Step 9: Verify
 
 > ✅ Evaluation test {case/set} deleted from Copilot Studio.

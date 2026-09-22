@@ -12,12 +12,14 @@ Test Power Platform MinimalBot components API instead:
              -> POST (verify) against
              ``{env-host}/copilotstudio/minimalBots/api/{botId}/components``
   * run   -> discover the shared_microsoftcopilotstudio connection, then POST
-             ``.../makerevaluation/testsets/{id}/run`` on the TEST ring.
+             ``.../makerevaluation/testsets/{id}/run``.
 
-Detection is intentionally simple (see :func:`is_minimalbot`): an agent is
-treated as MinimalBot when ``.local/config.json`` has no ``dataverseEndpoint``
-but does carry an ``environmentId``. The TEST Power Platform ring is used
-because that is where Dataverse-free evaluation environments live today.
+Detection (see :func:`is_minimalbot`) requires the *explicit* native DA-GA
+markers ``releaseLine == "da"`` or ``powerPlatformApiEndpoint`` plus an
+``environmentId`` and no ``dataverseEndpoint``. The Power Platform ring
+(test / preprod / prod) is derived per-agent from ``powerPlatformApiEndpoint``
+(see :func:`ring_for_config`), so a prod agent talks to the prod data plane
+rather than a hardcoded TEST ring.
 """
 
 from __future__ import annotations
@@ -48,12 +50,18 @@ except ImportError:  # pragma: no cover - dependency guard mirrors siblings
         "ERROR: 'PyYAML' package not found. Run: pip install -r scripts/requirements.txt"
     )
 
+from agentbuilder import RING_CONFIG, ring_from_environment_host
 
-# Shared public client used across the ADK's MSAL flows (matches auth.py).
+
+# Shared public client ID used across the ADK's MSAL flows (matches auth.py).
 CLIENT_ID = "417219b4-3a7d-42a2-bdb1-972bd8281a02"
-# Dataverse-free evaluation environments live on the TEST ring.
-PPAPI_SCOPE = "https://api.test.powerplatform.com/.default"
-PPAPI_BASE = "https://api.test.powerplatform.com"
+# Default ring for a hand-constructed client. Real flows derive the ring from
+# the agent's ``powerPlatformApiEndpoint`` (see :func:`ring_for_config`), so a
+# prod agent talks to the prod data plane instead of always the TEST ring.
+DEFAULT_RING = "test"
+# Retained for backward compatibility; prefer the per-ring helpers below.
+PPAPI_SCOPE = f"{RING_CONFIG[DEFAULT_RING]['audience']}/.default"
+PPAPI_BASE = str(RING_CONFIG[DEFAULT_RING]["audience"])
 COMPONENTS_API_VERSION = "2022-03-01-preview"
 MAKEREVAL_API_VERSION = "2024-10-01"
 MCS_CONNECTOR = "shared_microsoftcopilotstudio"
@@ -66,25 +74,79 @@ class MinimalBotEvaluationError(RuntimeError):
 
 
 def is_minimalbot(config: dict[str, Any]) -> bool:
-    """Return True when the configured agent is a Dataverse-free MinimalBot.
+    """Return True when the agent uses the Dataverse-free (MinimalBot) transport.
 
-    An agent is MinimalBot when ``.local/config.json`` has no usable
-    ``dataverseEndpoint`` but exposes an ``environmentId`` (top level or under
-    ``agent``). This is the "infer from missing Dataverse" detection rule.
+    Detection keys on the *explicit* native DA-GA markers written by
+    ``setup_existing_da.py`` — ``releaseLine == "da"`` or a
+    ``powerPlatformApiEndpoint`` — combined with the absence of a usable
+    ``dataverseEndpoint`` and the presence of an ``environmentId``.
+
+    Keying on an explicit marker (rather than merely "no ``dataverseEndpoint``")
+    means a classic Dataverse agent whose config is momentarily missing its
+    endpoint is never misrouted to the MinimalBot data plane, and the transport
+    can target the ring named by ``powerPlatformApiEndpoint`` instead of a
+    hardcoded ring.
     """
     if not isinstance(config, dict):
         return False
-    dataverse = str(config.get("dataverseEndpoint") or "").strip()
-    if dataverse:
+    if str(config.get("dataverseEndpoint") or "").strip():
         return False
-    return bool(_environment_id(config))
+    if not _environment_id(config):
+        return False
+    return _is_native_da(config)
+
+
+def _is_native_da(config: dict[str, Any]) -> bool:
+    """True when the config carries an explicit native DA-GA transport marker."""
+    agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
+    if str(config.get("releaseLine") or "").strip().casefold() == "da":
+        return True
+    if str(agent.get("releaseLine") or "").strip().casefold() == "da":
+        return True
+    return bool(str(config.get("powerPlatformApiEndpoint") or "").strip())
+
+
+def ring_for_config(config: dict[str, Any]) -> str:
+    """Return the Power Platform ring (test/preprod/prod) for this agent.
+
+    Derived from ``powerPlatformApiEndpoint`` via the same suffix map
+    ``agentbuilder`` uses. Falls back to ``prod`` when the endpoint is absent
+    or unrecognised so a real agent is never assumed to be on the TEST ring.
+    """
+    if not isinstance(config, dict):
+        return "prod"
+    endpoint = str(config.get("powerPlatformApiEndpoint") or "").strip()
+    if not endpoint:
+        return "prod"
+    try:
+        return ring_from_environment_host(endpoint)
+    except ValueError:
+        return "prod"
+
+
+def _api_base_for_ring(ring: str) -> str:
+    config = RING_CONFIG.get(ring) or RING_CONFIG[DEFAULT_RING]
+    return str(config["audience"])
+
+
+def _scope_for_ring(ring: str) -> str:
+    return f"{_api_base_for_ring(ring)}/.default"
+
+
+def _agent_backend_for_ring(ring: str) -> str | None:
+    """Cosmos is the Dataverse-free MinimalBot backend on the TEST ring."""
+    return "cosmos" if ring == "test" else None
 
 
 def _environment_id(config: dict[str, Any]) -> str:
     agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
+    # Prefer the active agent's own environmentId over the top-level value so a
+    # stale global carried forward from a previously onboarded agent cannot
+    # mask the environment the active agent actually lives in. This matches the
+    # precedence used by fetch_and_setup._resolve_refresh_target.
     return str(
-        config.get("environmentId")
-        or agent.get("environmentId")
+        agent.get("environmentId")
+        or config.get("environmentId")
         or ""
     ).strip()
 
@@ -104,18 +166,19 @@ def _claims(token: str) -> dict[str, Any]:
     return json.loads(base64.urlsafe_b64decode(payload))
 
 
-def _environment_host(environment_id: str) -> str:
-    """Derive the TEST environment API host from an environment GUID.
+def _environment_host(environment_id: str, ring: str = DEFAULT_RING) -> str:
+    """Derive the environment API host from an environment GUID for ``ring``.
 
     Copilot Studio addresses each environment at
-    ``https://{guid-without-last-char}.{last-char}.environment.api.test``.
-    This is the "url not present" fix: it needs no Dataverse instance URL.
+    ``https://{split-guid}.{host_suffix}`` where ``host_suffix`` and the split
+    index are ring-specific (see ``agentbuilder.RING_CONFIG``). Needs no
+    Dataverse instance URL.
     """
+    config = RING_CONFIG.get(ring) or RING_CONFIG[DEFAULT_RING]
+    suffix = str(config["host_suffix"])
+    primary = int(config["primary_split"])
     compact = environment_id.replace("-", "")
-    return (
-        f"https://{compact[:-1]}.{compact[-1:]}"
-        ".environment.api.test.powerplatform.com"
-    )
+    return f"https://{compact[:primary]}.{compact[primary:]}.{suffix}"
 
 
 def _wire_kinds(value: Any) -> Any:
@@ -166,14 +229,19 @@ def _connection_id(connection: dict[str, Any]) -> str:
     ).rstrip("/").rsplit("/", 1)[-1]
 
 
-def acquire_test_pp_token(tenant_id: str) -> tuple[str, str]:
-    """Acquire a TEST Power Platform token, reusing the shared MSAL cache.
+def acquire_test_pp_token(
+    tenant_id: str, scope: str | None = None
+) -> tuple[str, str]:
+    """Acquire a Power Platform token, reusing the shared MSAL cache.
 
-    Returns ``(access_token, signed_in_username)``. Shared by the MinimalBot
-    evaluation and install transports so both speak to the TEST ring through a
-    single MSAL implementation (interactive fallback + cache persistence).
+    Returns ``(access_token, signed_in_username)``. ``scope`` selects the ring
+    (defaults to the TEST ring for backward compatibility); real flows pass the
+    ring-appropriate ``.default`` scope. Shared by the MinimalBot evaluation and
+    install transports so both speak Power Platform through a single MSAL
+    implementation (interactive fallback + cache persistence).
     """
     tenant_id = tenant_id or "organizations"
+    scope = scope or _scope_for_ring(DEFAULT_RING)
     authority = f"https://login.microsoftonline.com/{tenant_id}"
     cache = msal.SerializableTokenCache()
     if os.path.exists(_TOKEN_CACHE_PATH):
@@ -187,17 +255,17 @@ def acquire_test_pp_token(tenant_id: str) -> tuple[str, str]:
     selected_account = accounts[0] if accounts else None
     result = None
     if selected_account:
-        result = app.acquire_token_silent([PPAPI_SCOPE], account=selected_account)
+        result = app.acquire_token_silent([scope], account=selected_account)
     if not result or "access_token" not in result:
-        print("Opening browser for Power Platform (TEST) sign-in...")
+        print("Opening browser for Power Platform sign-in...")
         result = app.acquire_token_interactive(
-            [PPAPI_SCOPE], prompt="select_account"
+            [scope], prompt="select_account"
         )
     if "access_token" not in result:
         # Don't echo error_description (CWE-209); mirror auth.py.
         error = result.get("error", "unknown_error")
         raise MinimalBotEvaluationError(
-            f"Power Platform (TEST) authentication failed ({error})."
+            f"Power Platform authentication failed ({error})."
         )
 
     if cache.has_state_changed:
@@ -233,7 +301,18 @@ class MinimalBotEvaluationClient:
     :meth:`list_test_sets`, or :meth:`run_test_set`.
     """
 
-    def __init__(self, environment_id: str, bot_id: str, tenant_id: str):
+    def __init__(
+        self,
+        environment_id: str,
+        bot_id: str,
+        tenant_id: str,
+        *,
+        ring: str = DEFAULT_RING,
+        host: str | None = None,
+        api_base: str | None = None,
+        scope: str | None = None,
+        agent_backend: str | None = None,
+    ):
         if not environment_id:
             raise MinimalBotEvaluationError(
                 "environmentId is missing from .local/config.json."
@@ -245,7 +324,14 @@ class MinimalBotEvaluationClient:
         self.environment_id = environment_id
         self.bot_id = bot_id
         self.tenant_id = tenant_id or "organizations"
-        self.host = _environment_host(environment_id)
+        self.ring = ring
+        self.host = host or _environment_host(environment_id, ring)
+        self.api_base = api_base or _api_base_for_ring(ring)
+        self.scope = scope or _scope_for_ring(ring)
+        self.agent_backend = (
+            agent_backend if agent_backend is not None
+            else _agent_backend_for_ring(ring)
+        )
         self._token: str | None = None
         self.signed_in_username: str | None = None
 
@@ -256,12 +342,15 @@ class MinimalBotEvaluationClient:
             environment_id=_environment_id(config),
             bot_id=str(agent.get("botId") or "").strip(),
             tenant_id=_tenant_id(config),
+            ring=ring_for_config(config),
         )
 
     # -- auth ---------------------------------------------------------------
     def authenticate(self) -> str:
-        """Acquire a TEST Power Platform token, reusing the shared MSAL cache."""
-        self._token, self.signed_in_username = acquire_test_pp_token(self.tenant_id)
+        """Acquire a Power Platform token for this ring, reusing the MSAL cache."""
+        self._token, self.signed_in_username = acquire_test_pp_token(
+            self.tenant_id, scope=self.scope
+        )
         return self._token
 
     def _require_token(self) -> str:
@@ -580,7 +669,7 @@ class MinimalBotEvaluationClient:
         run_on_published_bot: bool = False,
         mcs_connection_id: str | None = None,
     ) -> dict[str, Any]:
-        """Start a maker evaluation run for ``test_set_id`` on the TEST ring."""
+        """Start a maker evaluation run for ``test_set_id`` on the agent's ring."""
         if not test_set_id:
             raise MinimalBotEvaluationError("A test set ID is required to run.")
         components = self.read_components()
@@ -602,7 +691,7 @@ class MinimalBotEvaluationClient:
             "toolsConnections": tools_connections,
         }
         run_url = (
-            f"{PPAPI_BASE}/copilotstudio/environments/{self.environment_id}"
+            f"{self.api_base}/copilotstudio/environments/{self.environment_id}"
             f"/bots/{self.bot_id}/api/makerevaluation/testsets/{test_set_id}/run"
             f"?api-version={MAKEREVAL_API_VERSION}"
         )
@@ -634,7 +723,7 @@ class MinimalBotEvaluationClient:
     @property
     def _makereval_base(self) -> str:
         return (
-            f"{PPAPI_BASE}/copilotstudio/environments/{self.environment_id}"
+            f"{self.api_base}/copilotstudio/environments/{self.environment_id}"
             f"/bots/{self.bot_id}/api/makerevaluation"
         )
 

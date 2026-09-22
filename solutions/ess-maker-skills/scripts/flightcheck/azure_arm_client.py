@@ -42,7 +42,7 @@ except ImportError:
     sys.exit(1)
 
 
-# Shared public client used across the ADK's MSAL flows.
+# Shared public client ID used across the ADK's MSAL flows.
 CLIENT_ID = "417219b4-3a7d-42a2-bdb1-972bd8281a02"
 
 ARM_BASE = "https://management.azure.com"

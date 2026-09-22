@@ -38,8 +38,8 @@ except ImportError:
 from http_errors import APIError, raise_api_error  # noqa: E402
 
 
-# Shared public client ID used across the ADK's MSAL flows (the MinimalBot
-# MCS eval POC app). Delegated access only (user_impersonation).
+# Shared public client ID used across the ADK's MSAL flows. Delegated access
+# only (user_impersonation).
 CLIENT_ID = "417219b4-3a7d-42a2-bdb1-972bd8281a02"
 
 # Delegated scope for the Power Automate Flow Management API
