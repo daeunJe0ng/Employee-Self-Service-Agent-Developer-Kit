@@ -10,7 +10,7 @@ All operations are relative to the agent folder in .local/config.json.
 Usage:
     python scripts/checkpoint.py "reason for checkpoint"
     python scripts/checkpoint.py --revert
-    python scripts/checkpoint.py --revert-reason "reason for checkpoint"
+    python scripts/checkpoint.py --revert-reason "reason for checkpoint" [--only "glob"]
     python scripts/checkpoint.py --baseline
     python scripts/checkpoint.py --list
 """
@@ -20,6 +20,7 @@ import os
 import shutil
 import sys
 import time
+from glob import glob
 from datetime import datetime, timezone
 
 EXCLUDE_DIRS = {".baseline", ".checkpoints"}
@@ -104,6 +105,45 @@ def restore_from(agent_dir, source_dir):
             shutil.copy2(src, dst)
 
 
+def restore_matching(agent_dir, source_dir, pattern):
+    """Restore only paths matching pattern from a checkpoint."""
+    source_root = os.path.abspath(source_dir)
+    agent_root = os.path.abspath(agent_dir)
+    source_pattern = os.path.abspath(os.path.join(source_root, pattern))
+    agent_pattern = os.path.abspath(os.path.join(agent_root, pattern))
+    if os.path.commonpath([source_root, source_pattern]) != source_root:
+        raise ValueError(f"Restore pattern escapes checkpoint: {pattern}")
+    if os.path.commonpath([agent_root, agent_pattern]) != agent_root:
+        raise ValueError(f"Restore pattern escapes agent folder: {pattern}")
+
+    source_matches = {
+        os.path.relpath(path, source_root)
+        for path in glob(source_pattern, recursive=True)
+    }
+    current_matches = {
+        os.path.relpath(path, agent_root)
+        for path in glob(agent_pattern, recursive=True)
+    }
+    if not source_matches and not current_matches:
+        raise ValueError(f'Restore pattern matched no paths: "{pattern}"')
+
+    for relative_path in sorted(source_matches | current_matches):
+        source_path = os.path.abspath(os.path.join(source_root, relative_path))
+        target_path = os.path.abspath(os.path.join(agent_root, relative_path))
+
+        if os.path.isdir(target_path):
+            shutil.rmtree(target_path)
+        elif os.path.exists(target_path):
+            os.remove(target_path)
+
+        if os.path.isdir(source_path):
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            shutil.copytree(source_path, target_path)
+        elif os.path.isfile(source_path):
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            shutil.copy2(source_path, target_path)
+
+
 def create_checkpoint(agent_dir, reason):
     """Create a new checkpoint of current working files. Returns the number."""
     checkpoints_dir = get_checkpoints_dir(agent_dir)
@@ -154,7 +194,7 @@ def cmd_revert(agent_dir):
     print(f"Reverted to checkpoint {target}.")
 
 
-def cmd_revert_reason(agent_dir, reason):
+def cmd_revert_reason(agent_dir, reason, only=None):
     """Restore the newest checkpoint whose metadata reason exactly matches."""
     checkpoints_dir = get_checkpoints_dir(agent_dir)
     if not os.path.exists(checkpoints_dir):
@@ -184,8 +224,20 @@ def cmd_revert_reason(agent_dir, reason):
 
     target = max(matches)
     source_dir = os.path.join(checkpoints_dir, str(target))
-    restore_from(agent_dir, source_dir)
-    print(f'Reverted to checkpoint {target}: "{reason}".')
+    if only:
+        source_root = os.path.abspath(source_dir)
+        source_pattern = os.path.abspath(os.path.join(source_root, only))
+        if os.path.commonpath([source_root, source_pattern]) != source_root:
+            raise ValueError(f"Restore pattern escapes checkpoint: {only}")
+
+    if only:
+        restore_matching(agent_dir, source_dir, only)
+        print(
+            f'Restored "{only}" from checkpoint {target}: "{reason}".'
+        )
+    else:
+        restore_from(agent_dir, source_dir)
+        print(f'Reverted to checkpoint {target}: "{reason}".')
 
 
 def cmd_baseline(agent_dir):
@@ -245,8 +297,8 @@ def main():
         print("Usage:")
         print('  checkpoint.py "reason"   — Create a checkpoint')
         print("  checkpoint.py --revert   — Revert to last checkpoint")
-        print('  checkpoint.py --revert-reason "reason" '
-              "— Revert to the newest checkpoint with that exact reason")
+        print('  checkpoint.py --revert-reason "reason" [--only "glob"] '
+              '— Revert all or matching paths to a named checkpoint')
         print("  checkpoint.py --baseline — Restore original environment state")
         print("  checkpoint.py --list     — List all checkpoints")
         sys.exit(1)
@@ -259,7 +311,24 @@ def main():
         if len(sys.argv) < 3:
             print("ERROR: --revert-reason requires an exact checkpoint reason.")
             sys.exit(1)
-        cmd_revert_reason(agent_dir, " ".join(sys.argv[2:]))
+        extra_args = sys.argv[2:]
+        only = None
+        if "--only" in extra_args:
+            only_index = extra_args.index("--only")
+            if only_index == len(extra_args) - 1:
+                print("ERROR: --only requires a path or glob.")
+                sys.exit(1)
+            only = extra_args[only_index + 1]
+            reason_parts = extra_args[:only_index]
+            if len(extra_args) != only_index + 2:
+                print("ERROR: Unexpected arguments after --only.")
+                sys.exit(1)
+        else:
+            reason_parts = extra_args
+        if not reason_parts:
+            print("ERROR: --revert-reason requires an exact checkpoint reason.")
+            sys.exit(1)
+        cmd_revert_reason(agent_dir, " ".join(reason_parts), only=only)
     elif arg == "--baseline":
         cmd_baseline(agent_dir)
     elif arg == "--list":
