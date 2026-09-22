@@ -951,6 +951,12 @@ def _run_single_checkpoint(args):
         target_matcher=lambda cid: registry.matches(target, cid),
     )
     runner.config = config
+    runner.agent_slug = (
+        getattr(args, "agent_slug", None)
+        or config.get("activeAgent")
+        or (config.get("agent") or {}).get("slug")
+        or ""
+    )
     runner.env_url = env_url
     runner.dv_token = dv_token
     runner.env_id = env_id
@@ -1125,6 +1131,14 @@ def main():
             ".local/config.json for this run. Connect/setup skills use this "
             "when their validation state intentionally lives outside the "
             "foundation config."
+        ),
+    )
+    parser.add_argument(
+        "--agent-slug",
+        default=None,
+        help=(
+            "Scope agent-local checks to one workspace/agents/<slug> folder. "
+            "Defaults to activeAgent (or agent.slug) from .local/config.json."
         ),
     )
     parser.add_argument(
@@ -1553,6 +1567,12 @@ def main():
     # --- Build runner ---
     runner = FlightCheckRunner(scope=args.scope)
     runner.config = config
+    runner.agent_slug = (
+        getattr(args, "agent_slug", None)
+        or config.get("activeAgent")
+        or (config.get("agent") or {}).get("slug")
+        or ""
+    )
     runner.env_url = env_url
     runner.dv_token = dv_token
     runner.env_id = env_id
