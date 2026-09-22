@@ -382,6 +382,28 @@ def test_an_unrecognised_component_type_admits_the_tool_might_be_wrong() -> None
     assert "gap in the tool" in result.results[0].detail
 
 
+def test_a_connected_agent_delegation_is_a_manual_reconnect_not_a_failure() -> None:
+    # A type-9 TaskDialog that invokes a connected agent used to crash the projector.
+    # It now migrates by hand: reported as a reconnect task naming the target agent,
+    # with its configuration reproduced — never a FAILED blocker.
+    data = (
+        "kind: TaskDialog\n"
+        "modelDisplayName: Employee Self-Service HR\n"
+        "action:\n"
+        "  kind: InvokeConnectedAgentTaskAction\n"
+        "  botSchemaName: msdyn_copilotforemployeeselfservicehr\n"
+    )
+    reference = reference_set([])
+    component = ca_component("InvokeConnectedAgentTaskAction.HR", data)
+    result = merge(reference, {component.component_id: component}, "core")
+
+    row = result.results[0]
+    assert row.outcome is Outcome.MANUAL
+    assert "Employee Self-Service HR" in row.detail
+    assert "Agents settings" in row.detail
+    assert "InvokeConnectedAgentTaskAction" in row.configuration
+
+
 # --- instruction reconciliation ---------------------------------------------
 
 
