@@ -131,6 +131,9 @@ function Get-DataverseToken {
     if ([string]::IsNullOrWhiteSpace($tok)) {
         throw "Kit Dataverse authentication returned an empty access token for $Resource."
     }
+    if (-not (Test-DataverseToken -Resource $Resource -Token $tok)) {
+        throw "Kit Dataverse authentication returned a token that was rejected by $Resource."
+    }
     return $tok
 }
 
