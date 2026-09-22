@@ -6,8 +6,7 @@
 Copilot Studio agents that run on Cosmos-backed "MinimalBot" environments do
 not have a linked Dataverse database, so the classic Dataverse Web API used by
 ``push.py`` / ``evaluation_runs.py`` cannot reach them. This module speaks the
-Test Power Platform MinimalBot components API instead, mirroring the proven
-flow in ``tools/minimalbot_evaluation_poc.py``:
+Test Power Platform MinimalBot components API instead:
 
   * push  -> POST (read + changeToken) -> PUT (BotComponentInsert change set)
              -> POST (verify) against

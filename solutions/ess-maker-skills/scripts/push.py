@@ -1174,7 +1174,7 @@ def main():
 
     # Dataverse-free MinimalBot agents cannot use the Dataverse Web API below.
     # Route evaluation pushes through the TEST Power Platform MinimalBot
-    # components API instead (mirrors tools/minimalbot_evaluation_poc.py).
+    # components API instead (see scripts/minimalbot_evaluation.py).
     if is_minimalbot(config):
         return _minimalbot_push(config, dry_run=dry_run)
 
