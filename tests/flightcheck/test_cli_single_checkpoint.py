@@ -40,6 +40,7 @@ def _args(
     environment_url: str | None = None,
     environment_id: str | None = None,
     connect_config: str | None = None,
+    agent_slug: str | None = None,
     no_telemetry: bool = True,
     invocation_source: str | None = None,
     quiet_auth: bool = False,
@@ -49,6 +50,7 @@ def _args(
         environment_url=environment_url,
         environment_id=environment_id,
         connect_config=connect_config,
+        agent_slug=agent_slug,
         output=str(tmp_path / "out"),
         no_telemetry=no_telemetry,
         invocation_source=invocation_source,
@@ -349,6 +351,55 @@ class TestHermeticRun:
         with pytest.raises(SystemExit) as exc:
             cli._run_single_checkpoint(_args("FAKE-001", tmp_path))
         assert exc.value.code == 0
+
+    def test_assigns_explicit_agent_slug_and_connect_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        _silence_output: None,
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text('{"tenant":"acme"}', encoding="utf-8")
+        captured = {}
+
+        class _Spec:
+            category_label = "Fake"
+            is_family = False
+
+        class _Plan:
+            clients = frozenset()
+            requires_config = False
+            requires_dataverse_endpoint = False
+
+            def __init__(self) -> None:
+                self.ordered_fns = [("Fake", self._fn)]
+
+            @staticmethod
+            def _fn(runner):
+                captured["agent_slug"] = runner.agent_slug
+                captured["config"] = runner.config
+                return [_row("FAKE-001", Status.PASSED.value)]
+
+        monkeypatch.setattr(registry, "resolve", lambda target: _Spec())
+        monkeypatch.setattr(
+            registry, "transitive_requirements", lambda target: _Plan()
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(SystemExit) as exc:
+            cli._run_single_checkpoint(
+                _args(
+                    "FAKE-001",
+                    tmp_path,
+                    connect_config=str(overlay),
+                    agent_slug="active-agent",
+                )
+            )
+
+        assert exc.value.code == 0
+        assert captured["agent_slug"] == "active-agent"
+        assert captured["config"]["tenant"] == "acme"
+        assert captured["config"]["_connectConfigPath"] == str(overlay)
 
     def test_failed_row_exits_1(
         self,
