@@ -183,10 +183,27 @@ class FlightCheckRunner:
             # identical same-id rows, so collapsing exact duplicates here is
             # safe and keeps every genuinely-distinct row (different status or
             # evidence) intact. Order-preserving, first occurrence wins.
+            #
+            # The key is the row's FULL rendered identity — every field that
+            # reaches results.json / the report — not just id+status+result+
+            # remediation. Two rows that differ in any displayed field
+            # (priority, category, roles, doc link) are genuinely distinct and
+            # must both survive; only a true byte-for-byte duplicate collapses.
             seen: set = set()
             deduped: list[CheckResult] = []
             for r in self.results:
-                key = (r.checkpoint_id, r.status, r.result, r.remediation)
+                key = (
+                    r.checkpoint_id,
+                    r.category,
+                    r.priority,
+                    r.status,
+                    r.description,
+                    r.result,
+                    r.remediation,
+                    r.doc_link,
+                    r.doc_label,
+                    tuple(r.roles),
+                )
                 if key in seen:
                     continue
                 seen.add(key)

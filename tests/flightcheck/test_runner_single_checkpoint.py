@@ -147,6 +147,44 @@ class TestDuplicateRowCollapse:
 
         assert len(result.results) == 2
 
+    def test_same_id_status_result_but_different_priority_are_kept(self) -> None:
+        # Regression: the collapse key must be the row's FULL identity, not
+        # just id+status+result+remediation. Two rows that agree on those but
+        # differ in a displayed field (here priority) are distinct and must
+        # both survive — otherwise a High and a Medium finding for the same
+        # checkpoint would silently lose one.
+        runner = FlightCheckRunner(
+            scope="profile:p",
+            target_matcher=lambda cid: cid == "WD-FLOW-001",
+        )
+        row_high = CheckResult(
+            checkpoint_id="WD-FLOW-001",
+            category="Workday",
+            priority=Priority.HIGH.value,
+            status=Status.FAILED.value,
+            description="WD-FLOW-001 check",
+            result="same evidence",
+            remediation="same fix",
+        )
+        row_medium = CheckResult(
+            checkpoint_id="WD-FLOW-001",
+            category="Workday",
+            priority=Priority.MEDIUM.value,
+            status=Status.FAILED.value,
+            description="WD-FLOW-001 check",
+            result="same evidence",
+            remediation="same fix",
+        )
+        runner.register("Workday", _fn_returning(row_high, row_medium))
+
+        result = runner.run()
+
+        assert len(result.results) == 2
+        assert {r.priority for r in result.results} == {
+            Priority.HIGH.value,
+            Priority.MEDIUM.value,
+        }
+
 
 class TestErrSentinelRetention:
     def test_err_sentinel_retained_even_when_unmatched(self) -> None:
