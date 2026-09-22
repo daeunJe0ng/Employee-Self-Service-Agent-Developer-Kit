@@ -321,11 +321,15 @@ def test_maker_profile_requires_only_canonical_completion() -> None:
     assert "configPattern" not in text
 
 
-def test_incomplete_workday_da_setup_remains_unrouted() -> None:
+def test_workday_da_setup_routes_only_supported_hr_agents() -> None:
     step1 = _CONNECT_STEP1.read_text(encoding="utf-8")
+    normalized_step1 = " ".join(step1.split())
     workday = _WORKDAY.read_text(encoding="utf-8")
 
-    assert "src/skills/setup/workday-da/SKILL.md" not in step1
+    assert "src/skills/setup/workday-da/SKILL.md" in step1
+    assert "gptagent_copilotforemployeeselfservicehr" in step1
+    assert "Workday integration with the ESS IT Agent isn't supported" in step1
+    assert "or run `WD-PKG-001`" in normalized_step1
     assert "src/skills/foundation-setup/SKILL.md" not in step1
     assert _WORKDAY.is_file()
     assert "Hybrid Workday extension setup is not available" in workday
