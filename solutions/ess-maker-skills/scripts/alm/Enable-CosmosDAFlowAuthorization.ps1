@@ -178,7 +178,12 @@ Write-Step "Step 2/4 - delegatedauthorization for bot $BotId"
 $daFilter = "delegatedauthorizations?`$select=delegatedauthorizationid,name,providertype&`$filter=botid eq '$BotId'"
 $daExisting = (Invoke-Dv -Path $daFilter).value
 
-if ($daExisting.Count -gt 0) {
+if ($daExisting.Count -gt 1) {
+    Write-Fail "Found $($daExisting.Count) delegated authorizations for bot $BotId; expected exactly one. Resolve the duplicates before continuing."
+    exit 1
+}
+
+if ($daExisting.Count -eq 1) {
     $daId = $daExisting[0].delegatedauthorizationid
     Write-Reuse "delegatedauthorization $daId (providertype $($daExisting[0].providertype))"
     if ($daExisting[0].providertype -ne $ProviderTypeMcsBot) {
@@ -209,7 +214,12 @@ Write-Step "Step 3/4 - access team linked to the delegated authorization"
 $teamFilter = "teams?`$expand=delegatedauthorizationid&`$filter=delegatedauthorizationid/botid eq '$BotId'&`$select=teamid,name,teamtype"
 $teamExisting = (Invoke-Dv -Path $teamFilter).value
 
-if ($teamExisting.Count -gt 0) {
+if ($teamExisting.Count -gt 1) {
+    Write-Fail "Found $($teamExisting.Count) linked teams for bot $BotId; expected exactly one. Resolve the duplicates before continuing."
+    exit 1
+}
+
+if ($teamExisting.Count -eq 1) {
     $teamId = $teamExisting[0].teamid
     Write-Reuse "team $teamId '$($teamExisting[0].name)' (teamtype $($teamExisting[0].teamtype))"
     if ($teamExisting[0].teamtype -ne $TeamTypeAccess) {
@@ -314,10 +324,12 @@ $ok = $true
 
 $teamCheck = (Invoke-Dv -Path $teamFilter).value
 if ($teamCheck.Count -eq 1) {
-    Write-Ok "GetTeamsForBotId returns 1 team ($($teamCheck[0].teamid))"
+    $verifiedTeamId = $teamCheck[0].teamid
+    Write-Ok "GetTeamsForBotId returns 1 team ($verifiedTeamId)"
 } else {
     Write-Fail "GetTeamsForBotId returned $($teamCheck.Count) teams; Flow-RP takes the first and expects exactly one"
-    if ($teamCheck.Count -eq 0) { $ok = $false }
+    $verifiedTeamId = $null
+    $ok = $false
 }
 
 foreach ($wf in $WorkflowId) {
@@ -326,7 +338,7 @@ foreach ($wf in $WorkflowId) {
     try { $sp = Invoke-Dv -Path $spUri } catch { Write-Fail "$wf - could not read shares: $_"; $ok = $false; continue }
 
     $match = $sp.PrincipalAccesses | Where-Object {
-        $_.Principal.'@odata.type' -match 'team' -and $_.Principal.ownerid -eq $teamCheck[0].teamid
+        $_.Principal.'@odata.type' -match 'team' -and $_.Principal.ownerid -eq $verifiedTeamId
     }
     if ($match -and $match.AccessMask -match 'WriteAccess') {
         # XrmPrincipalAccessExtensions.ToUserAccessType: a mask containing WriteAccess maps to
