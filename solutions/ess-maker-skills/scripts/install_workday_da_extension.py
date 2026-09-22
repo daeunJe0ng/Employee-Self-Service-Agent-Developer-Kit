@@ -12,10 +12,17 @@ import shutil
 import subprocess
 import sys
 
-from flightcheck.checks.workday_da import _DA_HR_WORKDAY_CHILD_SCHEMA
+from flightcheck.checks.workday_da import (
+    _DA_HR_WORKDAY_CHILD_SCHEMA,
+    _MOS_WORKDAY_RUNTIME_SCHEMA,
+)
 
 
 WORKDAY_PACKAGES = {
+    "runtime": {
+        "applicationName": _MOS_WORKDAY_RUNTIME_SCHEMA,
+        "schemaName": _MOS_WORKDAY_RUNTIME_SCHEMA,
+    },
     "legacy-da": {
         "applicationName": "msdyn_EssDAHRWorkdayHCM",
         "schemaName": _DA_HR_WORKDAY_CHILD_SCHEMA,
@@ -112,7 +119,7 @@ def main() -> None:
     parser.add_argument(
         "--package-flavor",
         choices=sorted(WORKDAY_PACKAGES),
-        default="legacy-da",
+        default="runtime",
         help="Package required by the active ESS agent architecture.",
     )
     args = parser.parse_args()
