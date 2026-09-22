@@ -1,0 +1,84 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+"""Contracts for the resumable Workday DA setup foundation."""
+
+from pathlib import Path
+import re
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_WORKDAY_DA = (
+    _REPO_ROOT
+    / "solutions"
+    / "ess-maker-skills"
+    / "src"
+    / "skills"
+    / "setup"
+    / "workday-da"
+)
+_SHARED = _WORKDAY_DA / "shared"
+
+
+def test_checklist_has_the_complete_unique_step_set() -> None:
+    tasks = (_WORKDAY_DA / "tasks.md").read_text(encoding="utf-8")
+    step_ids = re.findall(r"<!-- id: (DA\d+\.\d+)", tasks)
+
+    expected = (
+        {"DA1.1"}
+        | {f"DA2.{index}" for index in range(1, 8)}
+        | {f"DA3.{index}" for index in range(1, 5)}
+        | {f"DA4.{index}" for index in range(1, 9)}
+        | {"DA5.1"}
+    )
+    assert set(step_ids) == expected
+    assert len(step_ids) == len(set(step_ids))
+    assert tasks.count("| status: pending -->") == len(expected)
+
+
+def test_checklist_uses_readable_titles_without_visible_internal_ids() -> None:
+    tasks = (_WORKDAY_DA / "tasks.md").read_text(encoding="utf-8")
+    visible_rows = [
+        line for line in tasks.splitlines() if line.startswith("- [ ] **")
+    ]
+
+    assert len(visible_rows) == 21
+    assert all(not re.search(r"\bDA\d", line) for line in visible_rows)
+    assert any("Connect Microsoft Entra sign-in to Workday" in line for line in tasks.splitlines())
+    assert any("Match the signed-in employee" in line for line in visible_rows)
+
+
+def test_state_contract_requires_immediate_durable_updates() -> None:
+    updater = (_SHARED / "checklist-updater.md").read_text(encoding="utf-8")
+    schema = (_SHARED / "config-schema.md").read_text(encoding="utf-8")
+
+    assert "A `MANUAL` or attestation-gated row is never" in updater
+    assert "**Persist immediately — never batch.**" in updater
+    assert ".local/setup/workday-da/tasks.md" in updater
+    assert ".local/connect/workday-da/config.json" in updater
+    assert "Read" in schema and "Merge" in schema and "Write" in schema
+    assert "sidecarDataverseEndpoint" in schema
+
+
+def test_entra_setup_pins_tenant_and_exact_app_identity() -> None:
+    entra = (_WORKDAY_DA / "provision-entra-app.md").read_text(encoding="utf-8")
+
+    assert "az account show --query tenantId -o tsv" in entra
+    assert '--tenant "{SETUP_TENANT_ID}"' in entra
+    assert "normalized **exact equality**" in entra
+    assert "contains(@, 'workday.com/{tenant}')" not in entra
+    assert "user_impersonation" in entra
+    assert "claimsMappingPolicy" in entra
+
+
+def test_workday_tenant_setup_preserves_manual_gates_and_safe_order() -> None:
+    tenant = (_WORKDAY_DA / "configure-tenant.md").read_text(encoding="utf-8")
+
+    register = tenant.index("## DA3.1 + DA3.2 — Register the API client")
+    policy = tenant.index("## DA3.3 — Scope & activate the authentication policy")
+
+    assert register < policy
+    assert "Single-tenant SAML pre-gate" in tenant
+    assert "CHECKPOINT_RESULT=\"MANUAL\"" in tenant
+    assert "ACK=true" in tenant
+    assert "Workday cert field is not API-reachable" in tenant
