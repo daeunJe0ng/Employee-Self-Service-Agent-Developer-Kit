@@ -9,6 +9,22 @@ Follow `src/reference/ui-formatting-guidelines.md` for every user-facing
 instruction in this flow. Resolve its examples with the actual environment,
 agent, product, and connector names before displaying them.
 
+## Setup state sources
+
+- **Current setup state:** `.local/setup/config.json`
+- **Active agent and workspace:** `.local/config.json`
+- **Setup evidence:** `.local/setup/agents/{AGENT_ID}/`
+
+Use the active agent's entry in `.local/setup/config.json` when determining its
+setup progress and readiness. Evidence files support that state; they are not a
+separate setup record.
+
+Maker-visible setup text consists of the defined **Message** blocks and
+questions, their choices, an observed blocker with its supported recovery, and
+the final handoff. Operational sequencing and response-policy prose are
+instruction-only. Successful internal operations continue directly to the next
+defined maker interaction.
+
 This is the DA-GA `/setup` entry point. It owns only:
 
 - maker authentication;
@@ -24,7 +40,7 @@ packs, and topics are explicitly outside this skill.
 
 ## Maker-facing progress
 
-At setup start and at the beginning of every subsequent setup turn, write the exact maker-facing progress checklist below as a complete snapshot. Every update contains all five stages in this order and uses the same ordinary Markdown shape: one single-level bullet and one leading status emoji per stage. Use the latest canonical setup state read in this invocation and results observed in this invocation to set their statuses. After each setup action that changes progress, write the complete snapshot again. Preserve completed stages, keep pending stages present, and represent subordinate checks through the status of their owning stage. Before every maker-facing response, including the final handoff, synchronize the complete snapshot once more and mark **Review the setup handoff** complete before finishing. Do not expose the eight internal setup-step IDs or show skipped internal records as successful checks.
+Write the exact maker-facing progress checklist below as a complete snapshot at these render points: the first interactive setup surface in a turn, a change to any of its five markers, a blocked state that requires maker action, and the final handoff. Every rendered update contains all five stages in this order and uses the same ordinary Markdown shape: one single-level bullet and one leading status emoji per stage. Use the latest canonical setup state read in this invocation and results observed in this invocation to set their statuses. A sequence of setup operations that retains the same markers continues to its next render point without another progress snapshot. Preserve completed stages and keep pending stages present. Report setup-owned FlightChecks in the separate runtime-readiness table defined by the shared existing-agent completion path; a FlightCheck result does not roll back a completed access, identity, agent-establishment, or materialization stage. Mark **Review the setup handoff** complete in the final snapshot. Do not expose the eight internal setup-step IDs or show skipped internal records as successful checks.
 
 **Message:**
 
@@ -40,17 +56,17 @@ Here's your ESS agent setup:
 
 Use ✅ for completed, 🔄 for the current stage, ⛔ for a blocked stage, and ⬜ for pending. Derive markers only from supplied context, results observed in this invocation, and canonical setup state read in this invocation. Never infer progress from conversation history.
 
-The checklist is a view, not another state model:
+The checklist is a view, not another state model. It tracks local workspace setup actions, not the runtime-readiness verdict:
 
 - a supplied or selected target completes the first stage;
 - direct service validation of an exact editable Dev completes the second and third stages for the existing-agent path;
 - a successful package import with direct Dev validation completes the second and third stages for the supplied-package path;
 - service inspection of a Prod source completes access and source-identity verification; a directly validated related Dev or successful create-only import completes the editable-Dev stage;
 - a successful MOS create followed by direct Dev attachment validation completes access, identity, and editable-Dev establishment for the fresh-agent path;
-- only `connectionStatus: workspace-ready` with `connectReady: true` completes local workspace materialization;
+- `connectionStatus: workspace-ready` with canonical workspace evidence and `SETUP-07` in state `done` completes local workspace materialization, independently of `connectReady`;
 - reviewing the factual completion report completes the handoff stage in the conversation and does not write another readiness marker.
 
-Before canonical setup begins, mark the first unresolved checklist stage with 🔄 and leave later stages marked ⬜. When canonical state is blocked, mark only the corresponding visible stage with ⛔ and preserve its failure causes in the response. Do not mark a stage complete from a skipped internal setup record.
+Before canonical setup begins, mark the first unresolved checklist stage with 🔄 and leave later stages marked ⬜. Mark a checklist stage ⛔ only when the operation named by that stage is itself blocked, and preserve its failure causes in the response. A blocked capacity, connection, or content FlightCheck belongs in the runtime-readiness table and does not change an already completed checklist marker. Do not mark a stage complete from a skipped internal setup record.
 
 ## Choose the sign-in account
 
@@ -101,7 +117,11 @@ Establish a working Python invocation before running setup commands.
 - When local recovery options appear exhausted, explain the external action
   needed and offer to perform it.
 
-When child guidance shows `python`, substitute the resolved invocation.
+  After successful runtime and dependency validation, run the next setup
+  operation. When validation requires maker action, state the observed failure
+  and its single recovery action.
+
+  When child guidance shows `python`, substitute the resolved invocation.
 
 ## Shared workspace choices
 
@@ -150,7 +170,7 @@ python scripts/setup_existing_da.py select-agent \
 
 Parse `DA_ACTIVE_AGENT_JSON:`. Continue setup for that agent when its `connectReady` value is not `true`; otherwise present the completion choices below. This operation changes only local active-agent selection.
 
-After a successful setup handoff, offer exactly these context-appropriate choices:
+The final handoff is the sole completion summary. After it, offer exactly these context-appropriate choices:
 
 - **Continue customizing this agent**
 - **Switch to another configured agent** -- only when another configured agent exists.
@@ -159,11 +179,21 @@ After a successful setup handoff, offer exactly these context-appropriate choice
 - **Create and open a new workspace**
 - **Finish for now**
 
-Do not preselect a choice. **Install another product in this environment** follows `da-mos-starter.md` with the recorded environment and ring. **Finish for now** ends without another operation.
+Do not preselect a choice. **Install another product in this environment** begins `da-mos-starter.md` at its first product-installation decision surface with the recorded environment and ring. **Finish for now** ends immediately. Every other selected follow-up begins at that follow-up's first decision surface rather than rendering another completion summary.
 
 ## Start
 
 Use context supplied with the current setup request and canonical setup state read in this invocation. Do not infer a route or mismatch from conversation history.
+
+Treat requests to create a new agent, install another product, or start with a
+fresh agent as explicit fresh-install intent. Resolve that intent before
+active-agent resume handling. Read canonical setup state and `.local/config.json`
+only to compare the recorded workspace environment with the requested target.
+For the same environment, retain every configured agent and continue directly
+through `src/skills/foundation-setup/da-mos-starter.md`. For a different
+environment, follow **Create and open a new workspace**. This route uses the
+environment match as its workspace decision; existing-agent readiness remains
+unchanged.
 
 When the current request supplies no agent, environment, package, or fresh-agent intent, read canonical setup state and `.local/config.json`. A usable active local target must identify the agent display name, agent ID, environment ID, service ring or validated API endpoint, and local workspace folder. Treat these values only as routing input; they do not prove current access, realm, or readiness.
 
@@ -244,13 +274,6 @@ python scripts/emit_capability.py setup
 ```
 
 When the maker has already supplied a native agent package or explicitly asked to use one, read `src/skills/foundation-setup/da-alm-import.md` and follow it. That skill owns the explicit package handoff and reads the canonical import reference. This is an advanced handoff, not a setup option to advertise or recommend.
-
-When the maker explicitly asks for a fresh installation, read
-`src/skills/foundation-setup/da-mos-starter.md` and follow it, even when the
-current Developer Kit folder already has setup state. A same-environment
-installation stays in this workspace. A different environment uses **Create and
-open a new workspace**. Without explicit fresh-agent intent, keep the
-existing-Dev path for a maker who already has an agent.
 
 When the request identifies an environment but not an agent or fresh-agent intent, read `src/skills/foundation-setup/da-existing-dev.md` and follow its environment-candidate selection path.
 

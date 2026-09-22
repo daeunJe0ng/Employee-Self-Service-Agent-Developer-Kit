@@ -50,7 +50,7 @@ python scripts/setup_existing_da.py attach \
 
 The access token supplies the tenant identity during initial inspection; do not infer it from the environment ID.
 
-The command validates the exact agent identity and Dev configuration, fetches the authoritative component change set, converts supported authoring components with the Microsoft Object Model serializer, and materializes the local workspace. It persists canonical setup progress for that agent before materialization. Complete the native FlightCheck maintenance below before treating the agent's `connect_ready: true` as current.
+The command validates the exact agent identity and direct Dev route, fetches the authoritative component change set, confirms its component identity and schema, converts supported authoring components with the Microsoft Object Model serializer, and materializes the local workspace. It does not require published Dev configuration; publishing is outside foundation setup and is not attachment remediation. It persists canonical setup progress for that agent before materialization when identity is complete. Complete the native FlightCheck maintenance below before treating the agent's `connect_ready: true` as current.
 
 If Object Model dependencies are missing, run:
 
@@ -90,7 +90,7 @@ Show candidate display names and ask the maker to choose one. Validate only the 
 
 ## Maintain native FlightCheck evidence
 
-After every successful `attach` or unchanged existing-workspace resume, run all four setup-owned FlightChecks for the exact agent.
+After every successful `attach` or unchanged existing-workspace resume, treat all four setup-owned FlightChecks and their maintenance calls as one presentation unit. Run all four for the exact agent and attempt every check whose prerequisites remain available.
 
 Run each checkpoint into its dedicated local evidence folder:
 
@@ -110,7 +110,7 @@ python scripts/setup_existing_da.py maintain-flightcheck --agent-id "{AGENT_ID}"
 python scripts/setup_existing_da.py maintain-flightcheck --agent-id "{AGENT_ID}" --checkpoint DA-CONTENT-001 --results .local/setup/agents/{AGENT_ID}/flightcheck/DA-CONTENT-001/results.json
 ```
 
-Parse every `DA_SETUP_FLIGHTCHECK_JSON:` result. Its `state`, `connectReady`, `activeStep`, and `failureCauses` are the setup verdict. Render the owning setup stage from that verdict and use the matching FlightCheck rows for maker-facing evidence and remediation.
+Parse every `DA_SETUP_FLIGHTCHECK_JSON:` result. Its `state`, `connectReady`, `activeStep`, and `failureCauses` are the runtime-readiness verdict. Use the matching FlightCheck rows for maker-facing evidence and remediation. After attachment, attempt every available check before producing the final runtime-readiness table. When maker action is required or an operation prevents later checks from running, state the observed blocker and supported recovery. Do not use a FlightCheck result to roll back a completed maker-facing checklist stage.
 
 For `DA-CONN-*`, setup applies these outcomes:
 
@@ -124,11 +124,11 @@ For `DA-CONN-*`, setup applies these outcomes:
 
 ## Interpret results
 
-Canonical setup state is authoritative for each agent's setup progress and completion. Setup for the active agent is complete when attachment reports `connectionStatus: workspace-ready`, every step in that agent's canonical record is `done`, and the final `DA_SETUP_FLIGHTCHECK_JSON:` reports `connectReady: true`.
+Canonical setup state is authoritative for each agent's setup progress and readiness. Local workspace materialization is complete when attachment reports `connectionStatus: workspace-ready`, canonical workspace evidence is present, and `SETUP-07` is `done`. Runtime readiness is complete only when every step in that agent's canonical record is `done` and the final `DA_SETUP_FLIGHTCHECK_JSON:` reports `connectReady: true`.
 
 Canonical state records native environment access, capacity, binding readiness, and baseline content readiness as automated FlightCheck evidence. Only preferred-solution configuration remains skipped because it does not apply to the DA-only path.
 
-When canonical setup state is incomplete, render the stage identified by `active_step` with its state and `failure_causes`. Translate `SETUP-03` to **Establish an editable Dev agent** and `SETUP-07` to **Materialize the local workspace**. Explain the unmet prerequisite in maker language and offer the bounded remediation for that evidence.
+Before materialization completes, render an incomplete `SETUP-03` as **Establish an editable Dev agent** and an incomplete `SETUP-07` as **Materialize the local workspace**. After materialization completes, render any blocked capacity, connection, or content step only in the runtime-readiness table. Explain each unmet prerequisite in maker language and offer the bounded remediation supported by that evidence.
 
 If content was synced to the local workspace but the returned result is not workspace-ready and supplies no specific failure cause, keep **Materialize the local workspace** current and show:
 
@@ -136,31 +136,38 @@ If content was synced to the local workspace but the returned result is not work
 
 Do not invent a cause or run another operation without new maker intent.
 
-On success, build this report only from `DA_EXISTING_DEV_SETUP_JSON:`. Use a friendly environment name only when an authoritative operation returned one; otherwise say `Selected Power Platform environment`. Render empty `unprojectedComponentKinds` as `None` and a missing checkpoint as `Not required`.
+After successful materialization and after all four setup-owned FlightChecks have been attempted, build the agent link from `DA_EXISTING_DEV_SETUP_JSON:` and build the runtime-readiness table from the applied FlightCheck results and canonical state. Render both even when `connectReady` is false.
+
+Infer a concise user-friendly product name from the authoritative product or agent display name when its meaning is unambiguous. For example, render `Employee Self-Service IT` as `Employee Self-Service (IT)` and `Employee Self-Service HR` as `Employee Self-Service (HR)`. If a friendly form is not clear, use the authoritative backend display name unchanged. Never use a schema name or agent ID as link text.
+
+Build the exact agent URL as `{COPILOT_STUDIO_ORIGIN}/environments/{ENVIRONMENT_ID}/bots/{AGENT_ID}/overview`, using the validated Copilot Studio origin for the selected service ring and the exact environment and agent IDs from setup evidence. Never link to the environment's agent-list page.
 
 **Message:**
 
-Your ESS agent workspace is ready.
+Your local workspace is ready for authoring. The remote agent is available at [{USER_FRIENDLY_PRODUCT_NAME}]({ACTUAL_AGENT_URL}) in Microsoft Copilot Studio.
 
-| Item                       | Result                                                                 |
-| -------------------------- | ---------------------------------------------------------------------- |
-| Editable Dev agent         | **{agent display name}**                                               |
-| Starting point             | Existing editable Dev                                                  |
-| Target environment         | **{friendly environment name or Selected Power Platform environment}** |
-| Local workspace            | `{workspace folder}`                                                   |
-| Topics synced              | {topic count}                                                          |
-| Global variables synced    | {variable count}                                                       |
-| Other retained components  | {unprojected component summary or None}                                |
-| Local checkpoint           | {checkpoint number or Not required}                                    |
+### Runtime readiness
 
-Not performed by foundation setup:
-
-- publishing or promotion;
-- connector installation and authentication;
-- product-extension configuration;
-- server-backed validation of unpublished local changes.
+| Check                | Status                          | Details                                  |
+| -------------------- | ------------------------------- | ---------------------------------------- |
+| Agent access         | {agent access status}           | {agent access evidence summary}          |
+| Environment capacity | {environment capacity status}   | {environment capacity evidence summary}  |
+| Connections          | {connections status}            | {connections evidence summary}           |
+| Agent content        | {agent content status}          | {agent content evidence summary}         |
+| **Overall**          | **{overall readiness status}**  | **{maker-facing readiness summary}**     |
 
 **End message.**
+
+Use the same five rows and order in every runtime-readiness table:
+
+- `Passed` is **✅ Ready**.
+- An accepted `DA-CONN-*` `Warning` is **⚠️ Ready with limitation** and retains its warning disclaimer.
+- `DA-CONN-*` `Skipped` because the agent declares no logical connection references is **➖ Not required**.
+- `NotConfigured` or `Failed` is **⛔ Action required**.
+- `Error` or an unavailable check is **⚠️ Check unavailable**.
+- A check without current evidence is **⬜ Not checked**.
+
+Use the most consequential current evidence when a checkpoint has multiple rows: **Action required**, then **Check unavailable**, then **Ready with limitation**, then **Not required**, then **Ready**. When `connectReady` is true and no accepted warning remains, render Overall as **✅ Ready**. When `connectReady` is true with an accepted warning, render it as **⚠️ Ready with limitations**. When `connectReady` is false after materialization, render it as **⚠️ Needs attention** and state that local authoring is ready while the reported runtime prerequisites remain. Do not add inferred warnings or place publishing, connector installation, promotion, product-extension configuration, or non-queryable governance requirements in this table.
 
 This report is a factual handoff, not another readiness gate. If the maker disputes a fact, inspect the underlying operation evidence rather than changing canonical state conversationally. Then present the shared completion choices from `SKILL.md`.
 
@@ -180,6 +187,12 @@ Offer exactly:
 
 - **Checkpoint and refresh**
 - **Keep local files unchanged**
+
+For **Keep local files unchanged**, preserve the managed local files and canonical setup state, then say:
+
+> Your local files were left unchanged. Setup stopped without refreshing them.
+
+This choice ends the current setup attempt at the refresh decision. FlightChecks and the final handoff resume after a later unchanged attachment or successful refresh.
 
 Continue only after the maker explicitly selects **Checkpoint and refresh**:
 
