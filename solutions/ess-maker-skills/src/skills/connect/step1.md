@@ -263,10 +263,10 @@ Stop immediately without creating Workday state or entering a lifecycle.
 
 For `gptagent_copilotforemployeeselfservicehr` or the legacy
 `msdyn_copilotforemployeeselfservicedahr` alias, read
-`src/skills/setup/workday-da/SKILL.md` and follow it. Do not run `WD-PKG-001`
-or the CEA lifecycle: DA packages share some Workday connection-reference
-names with CEA, so the CEA package fingerprint is not an architecture
-discriminator.
+`src/skills/setup/workday-da/SKILL.md` and follow it. That setup uses
+`WD-DA-PKG-001`. Do not create CEA Workday lifecycle state or run
+`WD-PKG-001`: DA packages share some Workday connection-reference names with
+CEA, so the CEA package fingerprint is not an architecture discriminator.
 
 For a CEA agent, check the currently installed Workday extension before
 honoring lifecycle state:
