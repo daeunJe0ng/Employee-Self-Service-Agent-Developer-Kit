@@ -39,6 +39,7 @@ def _args(
     tmp_path: Path,
     environment_url: str | None = None,
     environment_id: str | None = None,
+    connect_config: str | None = None,
     no_telemetry: bool = True,
     invocation_source: str | None = None,
     quiet_auth: bool = False,
@@ -47,6 +48,7 @@ def _args(
         checkpoint=checkpoint,
         environment_url=environment_url,
         environment_id=environment_id,
+        connect_config=connect_config,
         output=str(tmp_path / "out"),
         no_telemetry=no_telemetry,
         invocation_source=invocation_source,
@@ -75,6 +77,100 @@ def _silence_output(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestGates:
+    def test_connect_config_overlay_preserves_foundation_identity(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text(
+            '{"entraAppId":"app-123","tenant":"acme","status":"in-progress"}',
+            encoding="utf-8",
+        )
+
+        merged = cli._merge_connect_config(
+            {
+                "dataverseEndpoint": "https://example.crm.dynamics.com",
+                "agent": {"slug": "ess-hr"},
+                "status": "complete",
+            },
+            str(overlay),
+        )
+
+        assert merged["dataverseEndpoint"] == "https://example.crm.dynamics.com"
+        assert merged["agent"] == {"slug": "ess-hr"}
+        assert merged["entraAppId"] == "app-123"
+        assert merged["tenant"] == "acme"
+        assert merged["status"] == "complete"
+        assert merged["_connectConfigPath"] == str(overlay)
+
+    def test_connect_config_overlay_preserves_foundation_connections(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text(
+            '{"connections":{"Workday":{"tenant":"wrong"}}}',
+            encoding="utf-8",
+        )
+
+        merged = cli._merge_connect_config(
+            {"connections": {"Workday": {"tenant": "foundation"}}},
+            str(overlay),
+        )
+
+        assert merged["connections"]["Workday"]["tenant"] == "foundation"
+
+    def test_connect_config_supplies_sidecar_dataverse(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text(
+            '{"sidecarDataverseEndpoint":'
+            '"https://sidecar.crm.dynamics.com"}',
+            encoding="utf-8",
+        )
+
+        merged = cli._merge_connect_config(
+            {"powerPlatformApiEndpoint": "https://api.powerplatform.com"},
+            str(overlay),
+        )
+
+        assert (
+            merged["dataverseEndpoint"]
+            == "https://sidecar.crm.dynamics.com"
+        )
+        assert (
+            merged["powerPlatformApiEndpoint"]
+            == "https://api.powerplatform.com"
+        )
+
+    def test_foundation_dataverse_wins_over_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text(
+            '{"sidecarDataverseEndpoint":'
+            '"https://sidecar.crm.dynamics.com"}',
+            encoding="utf-8",
+        )
+
+        merged = cli._merge_connect_config(
+            {"dataverseEndpoint": "https://foundation.crm.dynamics.com"},
+            str(overlay),
+        )
+
+        assert (
+            merged["dataverseEndpoint"]
+            == "https://foundation.crm.dynamics.com"
+        )
+
+    def test_connect_config_overlay_rejects_non_object(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "invalid.json"
+        overlay.write_text('["not", "an", "object"]', encoding="utf-8")
+
+        with pytest.raises(ValueError, match="must contain a JSON object"):
+            cli._merge_connect_config({}, str(overlay))
+
     def test_environment_checkpoints_accept_explicit_foundation_context(
         self,
     ) -> None:
