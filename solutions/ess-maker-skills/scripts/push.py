@@ -42,7 +42,6 @@ from auth import (
     query_all,
     record_exists,
     dataverse_get,
-    is_connect_ready,
     load_config,
     AuthExpiredError,
 )
@@ -1171,12 +1170,6 @@ def main():
             repair_name = sys.argv[_idx + 1]
     only_globs = parse_only_globs(sys.argv[1:])
 
-    if is_connect_ready():
-        print(
-            "ERROR: Native DA push is not available in this workstream yet; "
-            "no Dataverse request was attempted."
-        )
-        sys.exit(1)
     config = load_config()
 
     # Dataverse-free MinimalBot agents cannot use the Dataverse Web API below.

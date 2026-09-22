@@ -168,6 +168,16 @@ python scripts/evaluation_runs.py results --run-id "{runId}"
 Use this existing run skill for results; do not route results to a separate
 result skill.
 
+When the run has completed, the **first line** of the results response must be:
+
+> Done. I ran your test set through [Copilot Studio]({agentStudioUrl}).
+
+Use the `agentStudioUrl` value returned by the `results` command as the link
+target, so "Copilot Studio" opens this run's results directly in the agent's
+Evaluate view. If `agentStudioUrl` is absent or `null`, render the same
+sentence with "Copilot Studio" as plain text (no link). Never fabricate a
+different URL. This line precedes everything below.
+
 First show:
 
 - Test-set name, run name/ID, state, start/end times, and total cases.
@@ -176,7 +186,7 @@ First show:
   or configured grader when available; otherwise label the default 95% target
   as a reporting target, not an API value.
 
-Then analyze and present:
+Then present:
 
 1. **Results by scenario group** - render every row returned in
    `analysis.scenarioGroups` using this exact table:
@@ -188,21 +198,9 @@ Then analyze and present:
    reliable finer-grained scenario metadata. Never omit this table merely
    because it contains one row; use that fallback rather than inventing
    categories.
-2. **Failure analysis - grouped by observed cause** - render every row returned
-   in `analysis.failureGroups` using this exact table:
-
-   > | # | Observed cause | Cases | Owner | Suggested action | Representative evidence |
-   > |---:|---|---:|---|---|---|
-
-   The script groups failed cases using metric status/data plus `errorReason`
-   and `aiResultReason`. Use its returned category, counts, evidence, and
-   suggested action without replacing them with unstructured bullets. These
-   are observed failure patterns, not proven root causes. Never invent an
-   owner; the script returns `Unassigned` when ownership is unavailable.
-3. **Detailed evidence** - retain per-test-case state, every metric type and
+2. **Detailed evidence** - retain per-test-case state, every metric type and
    status, error/AI-result reasons, and metric data returned by the API.
 
-End with the strongest evidence-based pattern and the next corrective action.
 Do not claim promotion readiness unless the user has configured a promotion
 threshold and the run clears it.
 

@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from auth import discover_tenant, load_config
+from agentbuilder import ring_from_environment_host
 from evaluation_review import (
     REVIEW_COMPLETED,
     REVIEW_FILENAME,
@@ -53,6 +54,66 @@ REVIEW_COMPLETION_NOT_PUSHED_GUIDANCE = (
     "Review is completed locally, but Copilot Studio still shows "
     "review_requested. Push the review completion before running."
 )
+COPILOT_STUDIO_ORIGIN_BY_RING = {
+    "prod": "https://copilotstudio.microsoft.com",
+    "preprod": "https://copilotstudio.preprod.microsoft.com",
+    "test": "https://copilotstudio.test.microsoft.com",
+}
+DEFAULT_COPILOT_STUDIO_ORIGIN = COPILOT_STUDIO_ORIGIN_BY_RING["prod"]
+
+
+def _studio_origin_for_config(config: dict[str, Any]) -> str:
+    """Return the ring-appropriate Copilot Studio origin for this environment.
+
+    The ring (prod / preprod / test) is derived from the configured Power
+    Platform API endpoint host using the same suffix map ``agentbuilder``
+    relies on, then mapped to the confirmed Studio host from
+    ``setup_existing_da.STUDIO_RING_BY_HOST``. Falls back to the prod origin
+    when the endpoint is absent or the ring cannot be determined.
+    """
+    endpoint = str(config.get("powerPlatformApiEndpoint") or "")
+    try:
+        ring = ring_from_environment_host(endpoint)
+    except ValueError:
+        return DEFAULT_COPILOT_STUDIO_ORIGIN
+    return COPILOT_STUDIO_ORIGIN_BY_RING.get(ring, DEFAULT_COPILOT_STUDIO_ORIGIN)
+
+
+def _agent_studio_url(
+    origin: str,
+    environment_id: str,
+    bot_id: str,
+    test_set_id: str | None = None,
+    run_id: str | None = None,
+    agent_backend: str | None = None,
+) -> str | None:
+    """Return the Copilot Studio link for a completed run, or None.
+
+    When both ``test_set_id`` and ``run_id`` are known, a deep link to the
+    exact run's results is built using the confirmed Copilot Studio route
+    ``/environments/{env}/copilots/{bot}/evaluation/runsDetails/{testSetId}/{runId}``
+    (verified against a live test-ring portal URL). ``agent_backend`` is
+    appended as the ``?agentBackend=`` query parameter when supplied (e.g.
+    ``cosmos`` for the test-ring MinimalBot).
+
+    When the run/test-set IDs are unavailable, it falls back to the agent's
+    overview page via the ``/environments/{env}/bots/{bot}/overview`` path
+    already relied on by flightcheck (``checks/publishing.py``,
+    ``checks/local_files.py``) and foundation-setup (``da-existing-dev.md``).
+    Both forms are combined with the ring-aware ``origin``; no unverified
+    route is fabricated.
+    """
+    if not origin or not environment_id or not bot_id:
+        return None
+    if test_set_id and run_id:
+        url = (
+            f"{origin}/environments/{environment_id}/copilots/{bot_id}"
+            f"/evaluation/runsDetails/{test_set_id}/{run_id}"
+        )
+        if agent_backend:
+            url += f"?agentBackend={agent_backend}"
+        return url
+    return f"{origin}/environments/{environment_id}/bots/{bot_id}/overview"
 
 
 class EvaluationRunError(RuntimeError):
@@ -865,6 +926,7 @@ def get_run_results(
     bot_id: str,
     agent_folder: str | Path,
     run_id: str,
+    studio_origin: str = DEFAULT_COPILOT_STUDIO_ORIGIN,
 ) -> dict[str, Any]:
     """Retrieve one run and enrich test case IDs with local case names."""
     result = client.get_maker_evaluation_test_run(
@@ -906,6 +968,13 @@ def get_run_results(
                 selected.get("displayName") or test_set_id
             )
     result["analysis"] = analyze_run_results(result)
+    result["agentStudioUrl"] = _agent_studio_url(
+        studio_origin,
+        str(environment_id or ""),
+        str(bot_id or ""),
+        test_set_id=test_set_id or None,
+        run_id=str(run_id or "") or None,
+    )
     return result
 
 
@@ -948,7 +1017,23 @@ def _minimalbot_command(args: argparse.Namespace, config: dict[str, Any]) -> int
         _print_json(client.list_test_runs())
         return 0
     if args.command == "results":
-        _print_json(client.get_test_run(args.run_id))
+        result = client.get_test_run(args.run_id)
+        if isinstance(result, dict):
+            env_id = str(
+                config.get("environmentId")
+                or (config.get("agent") or {}).get("environmentId")
+                or ""
+            )
+            bot_id = str((config.get("agent") or {}).get("botId") or "")
+            result["agentStudioUrl"] = _agent_studio_url(
+                _studio_origin_for_config(config),
+                env_id,
+                bot_id,
+                test_set_id=str(result.get("testSetId", "")) or None,
+                run_id=str(args.run_id or "") or None,
+                agent_backend="cosmos",
+            )
+        _print_json(result)
         return 0
     raise MinimalBotEvaluationError(
         f"The '{args.command}' command is not supported for MinimalBot "
@@ -1061,6 +1146,7 @@ def main() -> int:
                 bot_id,
                 agent_folder,
                 args.run_id,
+                _studio_origin_for_config(config),
             ))
     except (EvaluationRunError, MinimalBotEvaluationError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

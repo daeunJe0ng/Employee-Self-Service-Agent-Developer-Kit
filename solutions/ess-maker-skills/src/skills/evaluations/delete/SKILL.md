@@ -143,7 +143,11 @@ deleted.
 
 ## Step 8: Push
 
-Run `python scripts/push.py`. The push script automatically orders
+Run `python scripts/push.py --yes --force-delete`. Pass `--yes` — the script
+otherwise prompts on `input()`, which a non-interactive subprocess cannot answer
+and which reads as a hang. Deletions are destructive, so `--yes` alone is
+refused; `--force-delete` is required alongside it. Both are authorized only by
+the explicit Step 6 confirmation. The push script automatically orders
 evaluation deletions — children are deleted before parents.
 
 **If the push fails:** show the error and offer retry or revert.
