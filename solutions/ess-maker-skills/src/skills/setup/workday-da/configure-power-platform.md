@@ -184,18 +184,17 @@ Resolve parameters instead of asking the maker to paste GUIDs:
 If the bot or workflow set cannot be resolved unambiguously, stop and explain
 which value is missing. Never guess or run the script with a partial flow set.
 
-Before invoking the checked-in version, perform the same read-only
+Before invoking the checked-in script, perform the same read-only
 delegated-authorization and team lookups documented by the script:
 
 - exactly one MCSBot delegated authorization and one linked Access team already
-  exist for the bot → the script may verify/reuse them and add missing workflow
-  shares;
+  exist for the bot → the script reuses them and adds missing workflow shares;
 - no authorization or team exists → the script may create them. Its Dataverse
   writes request `Prefer: return=representation`, so the new record IDs are
   captured and bound in the same run;
-- more than one linked team exists → stop and require administrator
-  remediation. Do not rely on the script's exit code because this source
-  version can print `[FAIL]` for multiple teams without returning failure.
+- more than one delegated authorization or linked team exists → stop and
+  require administrator remediation. The script also fails closed on these
+  ambiguous records.
 
 First run the script with `-WhatIf`, show the target organization, agent, and
 flow display names, and obtain explicit approval. Then run the same command
@@ -210,8 +209,8 @@ permission, lookup, missing-flow, wrong-target, conflicting-existing-record, or
 multiple-team errors remain blocking. Do not apply based on an ambiguous
 preview.
 
-DA4.6 passes only when the preflight found exactly one linked Access team, the
-script exits with code `0`, ends with
+DA4.6 passes only when the applied result has exactly one linked Access team,
+the script exits with code `0`, ends with
 `Dataverse authorization is in place.`, returns one access team for the target
 bot, contains no `[FAIL]` line, and confirms `WriteAccess` for every supplied
 workflow. On any failure,
