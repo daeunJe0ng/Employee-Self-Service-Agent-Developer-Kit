@@ -176,9 +176,9 @@ def test_guided_overview_has_five_settings_with_states_and_purposes() -> None:
     for row, purpose in zip(
         rows[2:],
         (
-            "buttons, links, chat bubbles, and loading indicators",
+            "look and feel in light and dark themes",
             "direct access to important resources",
-            "guides employees into supported scenarios",
+            "guides end users into supported scenarios",
             "ticket updates, follow-ups, and time-sensitive tasks",
             "time-off balances, upcoming holidays, and service anniversaries",
         ),
@@ -280,6 +280,132 @@ def test_starter_prompt_guidance_covers_each_baseline_draft_combination() -> Non
     assert "opens an empty proposal and suppresses default suggestions" in prompts
     assert "the editor opens the existing saved prompts" in prompts
     assert "The saved baseline remains unchanged until Publish" in prompts
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "introduction"),
+    [
+        (
+            "open_accent_color",
+            "Choose light and dark accent colors to give your agent a look "
+            "that matches your organization.",
+        ),
+        (
+            "open_quick_links",
+            "Add, edit, and arrange links to help end users reach important "
+            "resources from your agent's landing page.",
+        ),
+        (
+            "open_starter_prompts",
+            "Organize suggested prompts into categories to help end users "
+            "discover what your agent can do.",
+        ),
+    ],
+)
+def test_widget_introductions_explain_value_and_publish_timing(
+    tool_name: str,
+    introduction: str,
+) -> None:
+    guidance = _section(
+        SKILL_PATH.read_text(encoding="utf-8"),
+        "Widget supporting guidance",
+    )
+
+    assert (
+        f"| `{tool_name}` | {introduction} When you publish changes, end users "
+        "will see them reflected in the agent within a few hours. |"
+    ) in guidance
+    assert "Opening the widget and editing its draft do not publish changes" in guidance
+    assert "employees" not in guidance.lower()
+    assert "suggested questions" not in guidance.lower()
+
+
+def test_widget_supporting_guidance_is_required_for_successful_opens() -> None:
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    hard_rules = _prose_section(text, "Hard rules")
+    guidance = _prose_section(text, "Widget supporting guidance")
+
+    assert (
+        "After every successful `open_*` call, follow **Widget supporting guidance**"
+    ) in hard_rules
+    assert "Use \"end users\" in maker-facing guidance" in hard_rules
+    assert "two-sentence introduction below, followed by one relevant state paragraph" in guidance
+    assert "Keep displayed values, contrast scores, and editing controls in the widget" in guidance
+    for heading in ("View accent colors", "Preview suggested changes", "Starter prompts"):
+        assert "**Widget supporting guidance**" in _section(text, heading)
+
+
+def test_default_starter_prompts_explain_draft_state_and_offer_grounded_suggestions() -> None:
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    guidance = _prose_section(text, "Widget supporting guidance")
+
+    assert (
+        "| Starter Prompts: `draft` omitted; saved `pivots` are absent or empty | "
+        "The widget shows default starter prompts to help you get started. "
+        "These haven't been published yet. You can edit the prompts and categories, "
+        "then select **Publish** when you're ready. If you'd like, I can also "
+        "suggest starter prompts based on your agent's capabilities. |"
+    ) in guidance
+    assert (
+        "When the maker accepts, follow **Gather context for suggested content** "
+        "before generating them"
+    ) in guidance
+
+
+def test_widget_state_copy_distinguishes_saved_defaults_and_supplied_proposals() -> None:
+    guidance = _prose_section(
+        SKILL_PATH.read_text(encoding="utf-8"),
+        "Widget supporting guidance",
+    )
+
+    assert "consumed opener result and the supplied `draft`" in guidance
+    assert "Supplied drafts take precedence over empty-baseline messages" in guidance
+    assert "without guessing which defaults or saved values are displayed" in guidance
+    for state, message in (
+        (
+            "Accent Color: `draft` omitted; neither theme has a custom color",
+            "No custom accent colors are configured, so the widget shows "
+            "the default light and dark theme colors.",
+        ),
+        (
+            "Quick Links: `draft` omitted; saved links are absent or empty",
+            "No quick links are configured yet.",
+        ),
+        (
+            "Any widget: a supplied non-empty draft",
+            "The widget shows proposed changes that haven't been published.",
+        ),
+        (
+            "Any widget: saved values with `draft` omitted",
+            "The widget shows your saved settings.",
+        ),
+    ):
+        assert f"| {state} | {message}" in guidance
+    assert "identify which theme uses a saved color and which uses the default" in guidance
+    assert (
+        "resetting accent colors to defaults, clearing Quick Links, or clearing Starter Prompts"
+    ) in guidance
+    assert (
+        "Default starter-prompt suggestions are suppressed for an explicit empty draft"
+    ) in guidance
+    assert (
+        "Describe supplied suggestions as unpublished proposals, including when nothing is saved yet"
+    ) in guidance
+
+
+def test_accent_descriptions_use_general_styling_without_naming_ui_elements() -> None:
+    text = SKILL_PATH.read_text(encoding="utf-8")
+
+    for heading in (
+        "Explain landing-page settings",
+        "Start a guided configuration",
+        "Widget supporting guidance",
+        "Branding",
+    ):
+        section = _section(text, heading).lower()
+        assert "look and feel" in section
+        for element in ("buttons", "chat bubbles", "loading indicators"):
+            assert element not in section
 
 
 def test_exact_clears_use_direct_updates_and_previews_require_explicit_intent() -> None:
