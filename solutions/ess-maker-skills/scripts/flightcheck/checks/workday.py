@@ -4252,10 +4252,8 @@ def _append_wd_wf_cat_link_trailer(runner, results: list[CheckResult]) -> None:
             "Workday Workflows block."
         ),
         remediation=(
-            "See WD-WF-CAT-001 for the per-scenario list and the "
-            "manual verification checklist (ISU account, payload "
-            "shape vs. Workday WSDL, evaluation test prompt, "
-            "connection-ref auth health)."
+            "See WD-WF-CAT-001 for the structural Workday topic "
+            "inventory read from the active agent's botComponentChanges."
         ),
     ))
 

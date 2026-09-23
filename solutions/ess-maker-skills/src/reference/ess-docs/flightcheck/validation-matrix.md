@@ -249,49 +249,31 @@ Tests all 17 ESS pre-configured workflows against the Workday API. Requires ISU 
 | WD-WF-016 | Update Email | Human_Resources | Write | | Contact Information (see WD-SEC-003 for the precise Personal Data + Maintain Contact Information / Edit Worker Additional Data check) |
 | WD-WF-017 | Update Phone | Human_Resources | Write | | Contact Information (see WD-SEC-003 for the precise Personal Data + Maintain Contact Information / Edit Worker Additional Data check) |
 
-### Workday Custom-Workflow Inventory (WD-WF-CAT-xxx) — Manual
+### Workday DA Component Inventory (WD-REF-001, WD-WF-CAT-001)
 
-The 17 SOAP tests above cover only the OOTB workflows the kit ships
-SOAP envelopes for. Customers routinely wire up additional Workday
-scenarios via two patterns:
+These checks read the active Declarative Agent's `botComponentChanges`
+through `runner.agentbuilder.fetch_components` and validate structural
+component `schemaName` values. They do not walk local topic YAML and
+do not diff Dataverse managed template configs.
 
-- **Pattern A** — Topic that calls
-  `WorkdaySystemGetCommonExecution` with a `scenarioName` of a
-  template-config record in Dataverse.
-- **Pattern B** — Standalone topic that calls a customer-built cloud
-  flow bound to the `shared_workdaysoap` connector via
-  `InvokeFlowAction`.
-
-Both patterns exit the automated validation surface (the kit doesn't
-ship a Workday WSDL parser; per-tenant security domain / ISU config
-varies). WD-WF-CAT-001 walks `workspace/agents/*/topics/*.mcs.yml`
-for these patterns and emits a MANUAL row enumerating any scenarios
-that aren't in the OOTB catalog. The OOTB catalog is resolved live
-from the customer's own Dataverse: the check queries
-`msdyn_employeeselfservicetemplateconfigs` and treats every
-`ismanaged=true` row as OOTB (auto-detects every scenario shipped by
-the installed Workday extension pack, with no kit-side curation
-needed). There is no fallback — if Dataverse credentials are missing
-the check returns SKIPPED, and if the Dataverse query errors the
-check returns WARNING surfacing the error verbatim. Returning PASSED
-without a tenant-accurate catalog would violate FlightCheck design
-principle #1 ("never return PASSED when the check cannot actually
-validate what it claims to validate"). The MANUAL remediation
-carries a 4-item checklist (ISU account, payload shape vs. Workday
-WSDL, evaluation test prompt, connection-ref auth health).
+Status mapping: required schemaNames present returns PASSED, required
+schemaNames missing returns FAILED, missing AgentBuilder access or
+active-agent bot ID returns SKIPPED, and malformed
+`botComponentChanges` or AgentBuilder read errors return WARNING.
+WD-WF-CAT-001 also returns SKIPPED before the API read on a simplified
+Workday install.
 
 | ID | Check | Priority | Method | Doc Link |
 |----|-------|----------|--------|----------|
-| WD-WF-CAT-001 | Workday custom-workflow inventory checklist (MANUAL) | High | Local file walk + Dataverse managed-template-config diff (SKIP on no token, WARN on query error) | [workday-extensibility](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday-extensibility) |
+| WD-REF-001 | Workday reference-data component inventory | High | AgentBuilder `botComponentChanges`: requires `.variable.*LookupTable` variables plus `WorkdaySystemGetReferenceData` and `WorkdaySystemRefreshReferenceData` topic components | [workday](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday) |
+| WD-WF-CAT-001 | Workday topic component inventory | High | AgentBuilder `botComponentChanges`: enumerates `.topic.Workday*` schemaNames as the structural Workday topic inventory | [workday-extensibility](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday-extensibility) |
 | WD-WF-CAT-LINK | Cross-link trailer surfacing WD-WF-CAT-001 from inside the SOAP-test block | Medium | Computed from WD-WF-CAT-001 cache | [workday-extensibility](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday-extensibility) |
 
-MANUAL rows do not fail readiness (per FlightCheck design principle #2)
-— they direct the operator to verify what the kit cannot. Address
-each scenario by confirming it against the 4-item checklist in the
-customer's environment. A scenario surfacing as MANUAL means it is
-NOT a managed row in the customer's tenant — either it is genuinely
-custom or the Workday extension pack is not installed in this
-environment.
+WD-WF-CAT-LINK is still a Medium MANUAL trailer emitted from the
+SOAP-test block when customer topics reference Workday scenarios
+outside the automated SOAP-test catalog. It points operators to the
+WD-WF-CAT-001 structural topic inventory so they can see which
+Workday topic components the active Declarative Agent currently has.
 
 ## 6. Local Agent File Validation (Kit-exclusive)
 
