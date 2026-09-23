@@ -77,7 +77,7 @@ def _run(command, *, capture_output: bool, timeout: int):
 
 
 def _parse_profiles(output: str) -> list[dict]:
-    """Parse the profile index, active marker, and cloud from PAC output."""
+    """Parse profile identity, cloud, and environment from PAC output."""
     profiles = []
     for line in output.splitlines():
         match = _PROFILE_RE.match(line)
@@ -92,12 +92,21 @@ def _parse_profiles(output: str) -> list[dict]:
             ),
             None,
         )
+        environment_url = next(
+            (
+                token.rstrip("/")
+                for token in re.split(r"\s+", remainder)
+                if token.casefold().startswith(("https://", "http://"))
+            ),
+            None,
+        )
         if cloud:
             profiles.append(
                 {
                     "index": match.group(1),
                     "active": bool(match.group(2)),
                     "cloud": cloud,
+                    "environment_url": environment_url,
                 }
             )
     return profiles
@@ -122,11 +131,21 @@ def ensure_pac_auth(
         if listed.returncode == 0
         else []
     )
-    matching = [
+    cloud_matching = [
         profile
         for profile in profiles
         if profile["cloud"].casefold() == cloud.casefold()
     ]
+    if ring == "preprod":
+        normalized_environment = environment_url.rstrip("/").casefold()
+        matching = [
+            profile
+            for profile in cloud_matching
+            if (profile["environment_url"] or "").casefold()
+            == normalized_environment
+        ]
+    else:
+        matching = cloud_matching
     active = [profile for profile in matching if profile["active"]]
     if len(active) == 1:
         return
