@@ -4,6 +4,7 @@ from typing import Any
 
 from conftest import DA_PREFIX, ca_component, dialog_component, reference_set
 from essmig.discovery import AgentMetadata
+from essmig.instructions import skip_instruction_reconciliation
 from essmig.llm import LlmUnavailable
 from essmig.merge import (
     _AGENT_SUFFIX,
@@ -128,6 +129,53 @@ def test_lists_without_ids_are_merged_whole_and_conflict_when_both_changed() -> 
     assert "carry no ids" in conflicts[0].reason
 
 
+def test_an_action_inserted_before_a_terminal_action_stays_before_it() -> None:
+    # The customer put `custom` before `end`; ESS independently edited `a`. The
+    # insert must keep its position — appending it after `end` (an EndDialog) would
+    # make it unreachable.
+    base = [{"id": "a", "v": 1}, {"id": "end", "kind": "EndDialog"}]
+    ours = [{"id": "a", "v": 1}, {"id": "custom", "v": 1}, {"id": "end", "kind": "EndDialog"}]
+    theirs = [{"id": "a", "v": 2}, {"id": "end", "kind": "EndDialog"}]
+    merged, conflicts = merge_node(base, ours, theirs, path="actions")
+    assert conflicts == []
+    assert [item["id"] for item in merged] == ["a", "custom", "end"]
+
+
+def test_an_action_inserted_at_the_front_stays_at_the_front() -> None:
+    base = [{"id": "a", "v": 1}]
+    ours = [{"id": "custom", "v": 1}, {"id": "a", "v": 1}]
+    theirs = [{"id": "a", "v": 2}]
+    merged, conflicts = merge_node(base, ours, theirs, path="actions")
+    assert conflicts == []
+    assert [item["id"] for item in merged] == ["custom", "a"]
+
+
+def test_consecutive_inserts_keep_their_relative_order() -> None:
+    base = [{"id": "a", "v": 1}, {"id": "end", "kind": "EndDialog"}]
+    ours = [
+        {"id": "a", "v": 1},
+        {"id": "c1", "v": 1},
+        {"id": "c2", "v": 1},
+        {"id": "end", "kind": "EndDialog"},
+    ]
+    theirs = [{"id": "a", "v": 2}, {"id": "end", "kind": "EndDialog"}]
+    merged, conflicts = merge_node(base, ours, theirs, path="actions")
+    assert conflicts == []
+    assert [item["id"] for item in merged] == ["a", "c1", "c2", "end"]
+
+
+def test_an_insert_whose_anchor_ess_deleted_is_flagged_not_silently_moved() -> None:
+    # The customer inserted `custom` after `only`, but ESS deleted `only` (which the
+    # customer never touched). There is no surviving action for `custom` to follow,
+    # so its position cannot be preserved — surface a conflict rather than guess.
+    base = [{"id": "only", "v": 1}]
+    ours = [{"id": "only", "v": 1}, {"id": "custom", "v": 1}]
+    theirs: list[Any] = []
+    merged, conflicts = merge_node(base, ours, theirs, path="actions")
+    assert [item["id"] for item in merged] == ["custom"]
+    assert any("position cannot be preserved" in c.reason for c in conflicts)
+
+
 # --- overlays ---------------------------------------------------------------
 
 
@@ -219,6 +267,57 @@ def test_both_sides_editing_the_same_action_conflicts_and_keeps_the_ess_version(
     # Nothing was written: the template is untouched until a human decides.
     actions = reference.da_components["topic.Foo"]["dialog"]["beginDialog"]["actions"]
     assert actions[0]["activity"] == "ess version"
+
+
+def test_a_conflicted_topic_records_the_complete_customer_version_for_reapplication() -> None:
+    # The customer edited two actions; ESS independently edited only the first. The
+    # first conflicts, but the customer's clean edit to the second must not vanish —
+    # the full customer version is reproduced so nothing is silently lost.
+    theirs = _da_dialog()
+    theirs["beginDialog"]["actions"][0]["activity"] = "ess one"  # type: ignore[index]
+    reference = reference_set([dialog_component("topic.Foo", theirs)], {"topic.Foo": SIMPLE})
+    ours_data = SIMPLE.replace("activity: one", "activity: mine one").replace(
+        "activity: two", "activity: mine two"
+    )
+    component = ca_component("topic.Foo", ours_data)
+
+    result = merge(reference, {component.component_id: component}, "hr")
+    res = result.results[0]
+
+    assert res.outcome is Outcome.CONFLICTED
+    assert len(res.conflicts) == 1  # only the a1 edit is a genuine conflict
+    # The a2 edit merged cleanly but was discarded with the merge; it must still be
+    # on record in the reproduced customer version, alongside the conflicting edit.
+    assert "mine two" in res.customer_version
+    assert "mine one" in res.customer_version
+
+
+def test_disabling_a_topic_is_carried_even_when_the_body_is_unchanged() -> None:
+    # Bundled-scenario shape: the customer left the ConversationStart body untouched
+    # but disabled it (statecode=1). That intent must be carried, not reported as
+    # "unchanged" with the topic left Active.
+    reference = reference_set(
+        [dialog_component("topic.Foo", _da_dialog())], {"topic.Foo": SIMPLE}
+    )
+    component = ca_component("topic.Foo", SIMPLE, statecode=1)
+
+    result = merge(reference, {component.component_id: component}, "hr")
+    res = result.results[0]
+
+    assert res.outcome is Outcome.MERGED
+    assert "disabled" in res.detail
+    target = reference.da_components["topic.Foo"]
+    assert target["state"] == "Inactive"
+    assert target["status"] == "Inactive"
+
+
+def test_an_unchanged_active_topic_is_still_reported_as_unchanged() -> None:
+    reference = reference_set(
+        [dialog_component("topic.Foo", _da_dialog())], {"topic.Foo": SIMPLE}
+    )
+    component = ca_component("topic.Foo", SIMPLE, statecode=0)
+    result = merge(reference, {component.component_id: component}, "hr")
+    assert result.results[0].outcome is Outcome.UNCHANGED
 
 
 def test_a_topic_with_no_template_counterpart_is_carried_wholesale() -> None:
@@ -508,6 +607,32 @@ def test_an_unreachable_model_keeps_da_instructions_and_reports_a_conflict() -> 
     assert gpt["metadata"]["instructions"] == "shipped DA text"
     assert result.results[0].outcome is Outcome.CONFLICTED
     assert "could not be auto-migrated" in result.results[0].detail
+
+
+def test_keep_instructions_leaves_a_conflict_not_a_false_model_success() -> None:
+    # --keep-instructions deliberately skips the model. The edit was NOT applied, so
+    # the outcome must be a conflict — never a clean MERGED claiming the model
+    # re-applied the edit.
+    reference = _gpt_reference("shipped DA text")
+    component = _gpt_component("shipped CA text plus my rule")
+
+    result = merge(
+        reference,
+        {component.component_id: component},
+        "hr",
+        merge_instructions=skip_instruction_reconciliation,
+    )
+
+    gpt = next(
+        entry
+        for entry in result.agent["components"]
+        if isinstance(entry, dict) and entry.get("kind") == "GptComponent"
+    )
+    assert gpt["metadata"]["instructions"] == "shipped DA text"
+    res = result.results[0]
+    assert res.outcome is Outcome.CONFLICTED
+    assert "--keep-instructions" in res.detail
+    assert "re-applied to the DA's wording" not in res.detail
 
 
 # --- interactive conflict resolution ----------------------------------------

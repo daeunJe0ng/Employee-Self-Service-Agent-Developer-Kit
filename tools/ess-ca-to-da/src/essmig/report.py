@@ -160,6 +160,17 @@ def render_markdown(
                     _snippet(conflict.theirs),
                     "```",
                 ]
+            if result.customer_version:
+                lines += [
+                    "",
+                    "Your complete version of this topic (so every edit — including any "
+                    "that merged cleanly and is not listed as a conflict above — is on "
+                    "record for manual re-application):",
+                    "",
+                    "```yaml",
+                    _snippet(result.customer_version),
+                    "```",
+                ]
 
     deprecated = [result for result in merged.results if result.deprecated]
     if deprecated:
