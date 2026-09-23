@@ -1,8 +1,8 @@
 <!-- Copyright (c) Microsoft Corporation. Licensed under the MIT License. -->
-# Workday Connect (DA) — Checklist (template)
+# Workday Connect — Checklist (template)
 
 The single, trackable checklist spanning the five Workday connect steps for the
-**Declarative Agent (DA)** flavor of Employee Self-Service. This file is the
+**ESS HR agent**. This file is the
 **canonical row source**: on first run the skill renders it to the working copy
 `.local/setup/workday-da/tasks.md` and then updates **only its own items**
 through the shared
@@ -14,7 +14,7 @@ mirror of each item's status is `setupStatus` in
 > Do not hand-edit the working copy's checkboxes — let the checklist-updater
 > write them so the **MANUAL / attestation rule** is enforced in one place.
 
-This checklist assumes your DA Employee Self-Service base agent is already
+This checklist assumes your Employee Self-Service HR agent is already
 installed (via `/setup`). If it isn't, DA-1 below detects that and points you
 there first.
 
@@ -50,7 +50,7 @@ express; all items start `pending`.
 
 ### 1. Workday extension package
 
-- [ ] **Install the Workday extension package** — Add the Workday extension package to your ESS DA HR agent so it can talk to Workday. If the HR base agent isn't installed yet, this step sends you to `/setup` first.
+- [ ] **Install the Workday extension package** — Add the Workday extension package to your ESS HR agent so it can talk to Workday. If the HR base agent isn't installed yet, this step sends you to `/setup` first.
   <!-- id: DA1.1 | role: Environment Maker | skill: da-1 | automatable: Attempt | checkpoints: WD-DA-PKG-001 | gate: prog, else manual | status: pending -->
 
 ### 2. Connect Microsoft Entra sign-in to Workday
@@ -93,9 +93,9 @@ express; all items start `pending`.
   <!-- id: DA4.4 | role: Environment Maker | skill: da-4 | automatable: Attempt | checkpoints: flow state verification | gate: prog, else manual | status: pending -->
 - [ ] **Connect Workday to the agent** — Connect each Workday flow in Copilot Studio and allow it to share the connection parameters used for signed-in employee access.
   <!-- id: DA4.5 | role: Environment Maker | skill: da-4 | automatable: No | checkpoints: n/a | gate: manual | status: pending -->
-- [ ] **Authorize the agent to use the Workday flows** — Preview and apply the delegated authorization and workflow sharing required by the ESS DA HR Agent.
+- [ ] **Authorize the agent to use the Workday flows** — Preview and apply the delegated authorization and workflow sharing required by the ESS HR agent.
   <!-- id: DA4.6 | role: Power Platform Administrator | skill: da-4 | automatable: Yes | checkpoints: authorization script verification | gate: prog | status: pending -->
-- [ ] **Configure employee context and topics** — Use the DA package's V2 signed-in-user context and enable the Workday topics selected for this agent.
+- [ ] **Configure employee context and topics** — Use the Workday package's V2 signed-in-user context and enable the Workday topics selected for this agent.
   <!-- id: DA4.7 | role: Environment Maker | skill: da-4 | automatable: Attempt | checkpoints: n/a | gate: manual | status: pending -->
 - [ ] **Allow Workday through the firewall** — Allow the Workday REST and SOAP hosts used by the Power Platform managed connectors.
   <!-- id: DA4.8 | role: InfoSec/IT | skill: da-4 | automatable: No | checkpoints: n/a | gate: attest | status: pending -->

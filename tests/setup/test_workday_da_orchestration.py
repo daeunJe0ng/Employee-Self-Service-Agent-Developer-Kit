@@ -26,15 +26,21 @@ def test_orchestrator_resumes_durable_state_without_restarting_setup() -> None:
     assert "must not** batch those writes" in text
     assert 'provider `status` to be `"ready"`' in text
     assert "you do not need to run `/setup` again" in normalized
+    assert "Here's the plan for connecting Workday to your ESS HR agent" in text
+    assert "- {m} Verify employee SAML sign-in policy" in text
+    assert "Your ESS HR agent is connected to Workday" in text
 
 
 def test_extension_install_uses_the_ring_aware_runtime_installer() -> None:
     text = (_WORKDAY_DA / "install-extension.md").read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
 
     assert "install_workday_da_extension.py" in text
     assert '--package-flavor "{PACKAGE_FLAVOR}"' in text
     assert '--ring "{RING}"' in text
     assert "managed-pac.nuget.config" in text
+    assert "Do not present .NET and PAC as unexplained product setup steps" in normalized
+    assert "do not restart the Workday checklist" in normalized
 
 
 def test_connections_are_created_before_binding_and_flow_activation() -> None:

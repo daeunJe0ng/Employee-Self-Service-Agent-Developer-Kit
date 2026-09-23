@@ -59,7 +59,7 @@ environment is outside this lifecycle and must not affect DA1.1.
 
   **Message:**
 
-  I don't see a DA Employee Self-Service agent installed in this environment
+  I don't see an Employee Self-Service HR agent installed in this environment
   yet. Run `/setup` first to install it, then come back and run
   `/connect workday` again.
 
@@ -100,8 +100,10 @@ when it reports `PASSED`.
 - **`WORKDAY_PACKAGE_INSTALL_FAILED_JSON:`** → show its concise `error` value
   and stop with DA1.1 `in-progress`. Do not claim the package needs a manual
   AppSource installation. PAC's output is the source of truth:
-  - If PAC CLI is missing, ask whether the maker wants the kit to install the
-    current-user managed copy. If approved, run:
+  - If PAC CLI is missing, explain that it is the local tool used to install
+    the Workday package, then ask once whether the maker wants the kit to
+    install a current-user managed copy. Do not present .NET and PAC as
+    unexplained product setup steps. If approved, run:
 
     ```powershell
     dotnet tool install --tool-path "$env:LOCALAPPDATA\InternalTools\pac" --interactive --verbosity n --configfile "scripts\managed-pac.nuget.config" Microsoft.PowerApps.CLI.Tool
@@ -109,6 +111,10 @@ when it reports `PASSED`.
 
     If the tool is already present but needs repair or update, run the same
     command with `update` instead of `install`. Then rerun P1.1.
+    If the managed install reports that a .NET SDK is missing, explain that it
+    is required only to install the local PAC tool. Obtain approval before
+    installing it, and resume at DA1.1 afterward; do not restart the Workday
+    checklist or repeat completed rows.
   - If PAC starts device-code authentication, wait for it to finish.
   - If multiple profiles exist for the required ring, ask the maker to select
     the intended profile with `pac auth select`, then retry.

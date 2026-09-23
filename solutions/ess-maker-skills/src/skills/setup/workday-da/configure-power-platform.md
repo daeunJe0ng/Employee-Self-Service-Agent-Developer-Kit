@@ -120,7 +120,7 @@ Otherwise show:
 **Message:**
 
 Open **Power Apps → Solutions → Workday → Cloud flows**. Turn on every flow used
-by the ESS DA HR Agent, then confirm they all show **On**. Do not enable unrelated
+by the ESS HR agent, then confirm they all show **On**. Do not enable unrelated
 flows from other solutions.
 
 **End message.**

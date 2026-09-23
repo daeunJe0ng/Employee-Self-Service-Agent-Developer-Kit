@@ -5,15 +5,15 @@ Every **Message** block is the exact text to show the user. Copy it verbatim. Do
 not rephrase, add commentary, or tell the user what tools you are calling or what
 files you are reading.
 
-This router sequences the five Workday connect steps for the **ESS Declarative
-Agent HR** flavor, using the master checklist as a
+This router sequences the five Workday connect steps for the **ESS HR agent**,
+using the master checklist as a
 **resume-aware spine**: it renders the working checklist on first run, resumes at
 the first unverified step, and dispatches to the owning step's playbook. It
 **never** advances past a `MANUAL` / attestation row on a flightcheck pass alone —
 those require explicit user acknowledgement (enforced by
 [`shared/checklist-updater.md`](./shared/checklist-updater.md)).
 
-This skill assumes the DA Employee Self-Service base agent itself is already
+This skill assumes the Employee Self-Service base agent itself is already
 installed — that's owned by `/setup`, not by this skill. DA-1 checks for it and
 sends you to `/setup` first if it isn't there yet.
 
@@ -30,7 +30,7 @@ Hub, CEA, ambiguous, incomplete, or unresolved, show:
 
 **Message:**
 
-This Workday setup supports the ESS DA HR Agent only. Select the ESS HR Agent,
+This Workday setup supports the ESS HR agent only. Select the ESS HR agent,
 or contact your administrator if it isn't available.
 
 **End message.**
@@ -74,13 +74,13 @@ ID, App ID URI) are safe to capture in chat — see
 
    **Message:**
 
-   Here's the plan for connecting Workday to your ESS DA HR Agent. Some steps
+   Here's the plan for connecting Workday to your ESS HR agent. Some steps
    require administrators outside the maker role, so involve them now if you
    don't hold these permissions:
 
    | Phase | What we'll do | Who is needed |
    | --- | --- | --- |
-   | Workday extension | Install or verify the ESS DA HR Workday package | Power Platform Environment Maker |
+   | Workday extension | Install or verify the Workday package for the ESS HR agent | Power Platform Environment Maker |
    | Microsoft Entra | Configure Workday SSO, API permission, consent, user assignment, NameID, and SAML signing | Entra Application Administrator or Cloud Application Administrator; a consent-capable administrator if required |
    | Workday tenant | Configure tenant security, the API client, functional areas, endpoints, authentication policy, and certificate trust | Workday Administrator |
    | Power Platform connections | Configure Workday OAuthUser and Dataverse connections, shared parameters, bindings, and cloud flows | Power Platform Environment Maker |
@@ -131,7 +131,7 @@ ID, App ID URI) are safe to capture in chat — see
    **3. Workday tenant configuration**
    - {m} Register the Workday API client
    - {m} Capture your Workday connection details
-   - {m} Activate the Workday authentication policy
+   - {m} Verify employee SAML sign-in policy
    - {m} Match the signing certificate
 
    **4. Power Platform and agent integration**
@@ -210,7 +210,7 @@ playbook role-gates (Workday Administrator, by attestation), records the
 current single-tenant SAML federation before any change, uploads and verifies
 the X.509 signing certificate (`WD-CONN-102`), edits Tenant Setup – Security,
 registers the Workday API client and captures the connection fields
-(`WD-API-CLIENT-001`), and scopes and activates the authentication policy
+(`WD-API-CLIENT-001`), and verifies the signed-in employee SAML policy
 (`WD-TENANT-001`) — updating rows **DA3.1**–**DA3.4** through the shared
 checklist-updater. All four are manual Workday-admin tasks (attest / manual
 gates) that need acknowledgement; `WD-API-CLIENT-001` and `WD-TENANT-001`
@@ -246,7 +246,7 @@ When it returns, go back to **Start** — every row should now be `done`.
 
 **Message:**
 
-Your ESS DA HR Agent is connected to Workday and the signed-in employee path
+Your ESS HR agent is connected to Workday and the signed-in employee path
 has been validated in this environment. The Workday connection is ready; you
 do not need to run `/setup` again.
 

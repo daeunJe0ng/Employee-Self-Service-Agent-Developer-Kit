@@ -44,6 +44,7 @@ def test_checklist_uses_readable_titles_without_visible_internal_ids() -> None:
 
     assert len(visible_rows) == 21
     assert all(not re.search(r"\bDA\d", line) for line in visible_rows)
+    assert all("ESS DA" not in line for line in visible_rows)
     assert any("Connect Microsoft Entra sign-in to Workday" in line for line in tasks.splitlines())
     assert any("Match the signed-in employee" in line for line in visible_rows)
 

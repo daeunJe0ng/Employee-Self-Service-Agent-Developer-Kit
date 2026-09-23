@@ -59,7 +59,7 @@ connection as ready.
 The configuration checklist is complete. Now validate the actual employee
 path:
 
-1. Publish the ESS DA HR Agent.
+1. Publish the ESS HR agent.
 2. Use a test employee who is assigned to the Workday Entra application and
    has valid Workday access.
 3. Start a new conversation so stale user-flow state is not reused.
