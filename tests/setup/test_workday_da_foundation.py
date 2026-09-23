@@ -62,16 +62,23 @@ def test_state_contract_requires_immediate_durable_updates() -> None:
 
 def test_entra_setup_pins_tenant_and_exact_app_identity() -> None:
     entra = (_WORKDAY_DA / "provision-entra-app.md").read_text(encoding="utf-8")
+    gate = (_SHARED / "permission-gate.md").read_text(encoding="utf-8")
 
     assert "az account show --query tenantId -o tsv" in entra
     assert '--tenant "{SETUP_TENANT_ID}"' in entra
     assert "normalized **exact equality**" in entra
     assert "contains(@, 'workday.com/{tenant}')" not in entra
+    assert "microsoft.graph.directoryRole" in entra
+    assert "roleTemplateId" in entra
+    assert "9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3" in entra
+    assert "never auto-select by display name" in entra
+    assert "Never downgrade a programmatic privileged-role" in gate
     assert "user_impersonation" in entra
     assert "claimsMappingPolicy" in entra
 
 
 def test_workday_tenant_setup_preserves_manual_gates_and_safe_order() -> None:
+    tasks = (_WORKDAY_DA / "tasks.md").read_text(encoding="utf-8")
     tenant = (_WORKDAY_DA / "configure-tenant.md").read_text(encoding="utf-8")
 
     register = tenant.index("## DA3.1 + DA3.2 — Register the API client")
@@ -82,3 +89,5 @@ def test_workday_tenant_setup_preserves_manual_gates_and_safe_order() -> None:
     assert "CHECKPOINT_RESULT=\"MANUAL\"" in tenant
     assert "ACK=true" in tenant
     assert "Workday cert field is not API-reachable" in tenant
+    assert "checkpoints: WD-CONN-102 | gate: manual" in tasks
+    assert "checkpoints: WD-API-CLIENT-001 | gate: attest" in tasks

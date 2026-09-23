@@ -57,13 +57,14 @@ Run the `ROLE_QUERY` the calling file supplied. Examples of what a caller passes
 
 - **Entra role (Graph):**
   ```
-  az rest --method GET --url "https://graph.microsoft.com/v1.0/me/memberOf?%24select=displayName" --query "value[].displayName" -o json
+  az rest --method GET --url "https://graph.microsoft.com/v1.0/me/memberOf/microsoft.graph.directoryRole?%24select=displayName,roleTemplateId" --query "value[].{displayName:displayName,roleTemplateId:roleTemplateId}" -o json
   ```
   (OData options are percent-encoded — `%24select` not `$select` — so the URL
   survives PowerShell/bash `$`-expansion and runs first-try on every shell.)
-  Pass if the result contains a directory role that grants `REQUIRED_ROLE`
-  (e.g. `Application Administrator`, `Cloud Application Administrator`,
-  `Global Administrator`).
+  Pass only when the returned `roleTemplateId` equals one of the stable,
+  caller-approved built-in role template IDs. The
+  `microsoft.graph.directoryRole` cast excludes ordinary groups; display names
+  are diagnostic only and must never determine authorization.
 - **Power Platform Admin / Dataverse role:** the caller supplies the specific
   admin-API or Dataverse query and the expected value.
 
@@ -88,16 +89,26 @@ this step again.
 - Return to the calling file. **The caller must halt — do not proceed.**
 
 **If the query itself fails** for an unrelated reason (network, not logged in):
-retry once. If it still fails, **do not** assume pass — fall back to the
-attestation gate in G.2 (so a check error never silently grants access),
-recording `note` = the query error.
+retry once. If it still fails, **fail closed**:
+
+**Message:**
+
+I couldn't verify the **{REQUIRED_ROLE}** role, so I can't safely continue this
+step. Sign in again or ask a verified administrator to run it, then retry.
+
+**End message.**
+
+- Set `GATE_RESULT = "stop"`.
+- Record the query error in `GATE_EVIDENCE.note`.
+- Return to the calling file. Never downgrade a programmatic privileged-role
+  gate to self-attestation.
 
 ---
 
 ## G.2 — Attestation gate
 
-Use when `GATE_MODE` is `"attested"` (Workday Administrator, InfoSec/IT), or as
-the fallback when a programmatic query errored.
+Use only when `GATE_MODE` is `"attested"` (Workday Administrator, InfoSec/IT).
+Programmatic privileged-role checks never fall back to this section.
 
 **Message:**
 

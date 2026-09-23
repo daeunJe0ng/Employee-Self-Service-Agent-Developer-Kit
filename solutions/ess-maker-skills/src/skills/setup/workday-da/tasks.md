@@ -56,7 +56,7 @@ express; all items start `pending`.
 ### 2. Connect Microsoft Entra sign-in to Workday
 
 - [ ] **Set up Workday sign-in** — Create the Microsoft Entra application Workday uses to recognize signed-in employees.
-  <!-- id: DA2.1 | role: App/Cloud App Admin | skill: da-2 | automatable: Yes | checkpoints: WD-CONN-102 | gate: prog instantiate (Graph); WD-CONN-102 healthy-state = MANUAL (Entra cert health auto-checked; Workday certificate parity deferred to DA3.4) | status: pending -->
+  <!-- id: DA2.1 | role: App/Cloud App Admin | skill: da-2 | automatable: Yes | checkpoints: WD-CONN-102 | gate: manual | status: pending -->
 - [ ] **Allow Power Platform to call Workday** — Add the permission used by the Workday connector and the Microsoft Graph permissions needed for sign-in.
   <!-- id: DA2.2 | role: App/Cloud App Admin or App Owner | skill: da-2 | automatable: Yes | checkpoints: WD-ENTRA-SCOPE-001 | gate: prog | status: pending -->
 - [ ] **Approve the sign-in permissions** — Grant organization-wide consent for the permissions the Workday connection needs.
@@ -75,7 +75,7 @@ express; all items start `pending`.
 - [ ] **Register the Workday API client** — In Workday, register the API client for the agent, including the functional areas and Workday-owned scope.
   <!-- id: DA3.1 | role: Workday Administrator | skill: da-3 | automatable: No | checkpoints: WD-API-CLIENT-001 | gate: attest | status: pending -->
 - [ ] **Capture your Workday connection details** — Record the client ID, token endpoint, REST and SOAP base URLs, and tenant name needed to connect.
-  <!-- id: DA3.2 | role: Workday Administrator | skill: da-3 | automatable: No | checkpoints: WD-TENANT-001 | gate: attest | status: pending -->
+  <!-- id: DA3.2 | role: Workday Administrator | skill: da-3 | automatable: No | checkpoints: WD-API-CLIENT-001 | gate: attest | status: pending -->
 - [ ] **Activate the Workday authentication policy** — Scope Workday's authentication policy to the new OAuth client, allow SAML sign-in, and activate it.
   <!-- id: DA3.3 | role: Workday Administrator | skill: da-3 | automatable: No | checkpoints: WD-TENANT-001 | gate: attest | status: pending -->
 - [ ] **Match the signing certificate** — Confirm the Workday-side signing certificate matches the one in Entra (validity dates, or an externally-computed SHA-1 — Workday shows no thumbprint).

@@ -93,22 +93,34 @@ Apply the shared [`shared/permission-gate.md`](shared/permission-gate.md) before
 any Entra work, with:
 
 - `REQUIRED_ROLE` = `"Application Administrator"` (or Cloud Application
-  Administrator / Privileged Role Administrator / Global Administrator / app owner)
+  Administrator / Privileged Role Administrator / Global Administrator)
 - `GATE_MODE` = `"programmatic"`
 - `STEP_ID` = `"DA2.1"`
 - `ROLE_QUERY` = a Microsoft Graph directory-role membership check for the
   signed-in user:
 
   ```
-  az rest --method GET --url "https://graph.microsoft.com/v1.0/me/memberOf?%24select=displayName" --query "value[].displayName" -o json
+  az rest --method GET --url "https://graph.microsoft.com/v1.0/me/memberOf/microsoft.graph.directoryRole?%24select=displayName,roleTemplateId" --query "value[].{displayName:displayName,roleTemplateId:roleTemplateId}" -o json
   ```
 
-  The role is held if the returned role names include **`Application
-  Administrator`**, **`Cloud Application Administrator`**, **`Privileged Role
-  Administrator`**, or **`Global Administrator`**. Treat an
+  The role is held only when a returned `roleTemplateId` equals one of these
+  stable built-in role template IDs:
+
+  - Application Administrator:
+    `9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3`
+  - Cloud Application Administrator:
+    `158c047a-c907-4556-b7ef-446551a6b5f7`
+  - Privileged Role Administrator:
+    `e8611ab8-c189-46e8-94e1-60213ab1f814`
+  - Global Administrator:
+    `62e90394-69f5-4237-9190-012177145e10`
+
+  Do not authorize from `displayName`; it is included only for readable
+  evidence. Treat an
   `Insufficient privileges` / `Authorization_RequestDenied` / forbidden response
   as "role not held". If the query errors for an unrelated reason (network, not
-  signed in), follow the gate's retry-then-attest fallback — never assume pass.
+  signed in), retry once and then stop. Never downgrade this programmatic role
+  gate to self-attestation.
 
 If `GATE_RESULT` is `"stop"`, **halt** — do not continue. Otherwise carry
 `GATE_EVIDENCE` forward (recorded when the DA2 rows are updated).
@@ -228,28 +240,15 @@ no match** — look for an existing Workday SAML app by name:
 az ad sp list --display-name "Workday" --query "[].{name:displayName, appId:appId, id:id, sso:preferredSingleSignOnMode, replyUrls:replyUrls}" -o json
 ```
 
-- **If Workday SAML app(s) already exist** — consider only the returned apps in
-  SAML mode (`sso == "saml"`):
-
-  - **Exactly one** → save its `appId` → `WD_ENTRA_APP_ID` and its `id` (the
-    service-principal id) → `WD_ENTRA_SP_ID`, then resolve its **application**
-    object id — the `az ad sp list` query above returns the *service-principal*
-    id, **not** the app object id, so query it explicitly:
-
-    ```
-    az ad app list --filter "appId eq '{WD_ENTRA_APP_ID}'" --query "[0].id" -o tsv
-    ```
-
-    → `WD_ENTRA_APP_OBJECT_ID`. Then **skip to Persist below** so `entraAppId` is
-    written to config.
-
-  - **More than one** → do **not** guess which is correct. The app chosen here is
-    pinned to `entraAppId` in config, and every later step and FlightCheck check
-    (consent, user assignment, NameID) keys off it — picking the wrong sibling
-    makes a correctly-configured app report FAILED. Ask the user to choose. Use
-    the `vscode_askQuestions` tool, building the `options` array **dynamically
-    from the returned SAML apps** — one option per app, plus a final "Create a new
-    app instead" option:
+- **If one or more Workday SAML apps already exist** — consider only the
+  returned apps in SAML mode (`sso == "saml"`). Because tenant identity was not
+  established, never auto-select by display name, even when there is exactly
+  one match. The app chosen here is pinned to `entraAppId` in config, and every
+  later step and FlightCheck check (consent, user assignment, NameID) keys off
+  it — picking the wrong sibling makes a correctly-configured app report
+  FAILED. Ask the user to choose. Use the `vscode_askQuestions` tool, building
+  the `options` array **dynamically from the returned SAML apps** — one option
+  per app, plus a final "Create a new app instead" option:
 
     ```json
     [
@@ -265,27 +264,27 @@ az ad sp list --display-name "Workday" --query "[].{name:displayName, appId:appI
     ]
     ```
 
-    Emit one option object per returned SAML app. Build a label-to-app mapping
-    before asking. If a display name is unique, use it as the label. If two or
-    more apps share a display name, make each **label itself** unique by
-    appending `· {last 6 characters of appId}`. Set `description` to its SSO
-    mode plus first reply URL; never include a full app/object GUID. Mark the
-    option for the kit-provisioned **`Workday (ESS Copilot)`** app as
-    `recommended` when unambiguous. Then:
-    - **User picks an existing app** → use the retained label-to-app mapping
-      (never a display-name search) to map the unique chosen label to that app and
-      save its `appId` → `WD_ENTRA_APP_ID` and its `id` (the service-principal
-      id) → `WD_ENTRA_SP_ID`, then resolve its **application** object id — the
-      `az ad sp list` results carry the *service-principal* id, **not** the app
-      object id, so query it explicitly:
+  Emit one option object per returned SAML app. Build a label-to-app mapping
+  before asking. If a display name is unique, use it as the label. If two or
+  more apps share a display name, make each **label itself** unique by
+  appending `· {last 6 characters of appId}`. Set `description` to its SSO
+  mode plus first reply URL; never include a full app/object GUID. Mark the
+  option for the kit-provisioned **`Workday (ESS Copilot)`** app as
+  `recommended` when unambiguous. Then:
+  - **User picks an existing app** → use the retained label-to-app mapping
+    (never a display-name search) to map the unique chosen label to that app and
+    save its `appId` → `WD_ENTRA_APP_ID` and its `id` (the service-principal
+    id) → `WD_ENTRA_SP_ID`, then resolve its **application** object id — the
+    `az ad sp list` results carry the *service-principal* id, **not** the app
+    object id, so query it explicitly:
 
-      ```
-      az ad app list --filter "appId eq '{WD_ENTRA_APP_ID}'" --query "[0].id" -o tsv
-      ```
+    ```
+    az ad app list --filter "appId eq '{WD_ENTRA_APP_ID}'" --query "[0].id" -o tsv
+    ```
 
-      → `WD_ENTRA_APP_OBJECT_ID`. Then **skip to Persist below** so `entraAppId`
-      is written to config — do **not** jump ahead to verify.
-    - **User picks "Create a new app instead"** → follow the **If none exists**
+    → `WD_ENTRA_APP_OBJECT_ID`. Then **skip to Persist below** so `entraAppId`
+    is written to config — do **not** jump ahead to verify.
+  - **User picks "Create a new app instead"** → follow the **If none exists**
       instantiate path below.
 
 - **If none exists**, instantiate from the Workday gallery template. Find the
