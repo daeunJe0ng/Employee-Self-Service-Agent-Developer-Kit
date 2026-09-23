@@ -107,6 +107,29 @@ def restore_from(agent_dir, source_dir):
 
 def restore_matching(agent_dir, source_dir, pattern):
     """Restore only paths matching pattern from a checkpoint."""
+    source_root, agent_root, relative_paths = _matching_restore_paths(
+        agent_dir, source_dir, pattern
+    )
+
+    for relative_path in relative_paths:
+        source_path = os.path.abspath(os.path.join(source_root, relative_path))
+        target_path = os.path.abspath(os.path.join(agent_root, relative_path))
+
+        if os.path.isdir(target_path):
+            shutil.rmtree(target_path)
+        elif os.path.exists(target_path):
+            os.remove(target_path)
+
+        if os.path.isdir(source_path):
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            shutil.copytree(source_path, target_path)
+        elif os.path.isfile(source_path):
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            shutil.copy2(source_path, target_path)
+
+
+def _matching_restore_paths(agent_dir, source_dir, pattern):
+    """Validate a scoped restore and return its relative matching paths."""
     source_root = os.path.abspath(source_dir)
     agent_root = os.path.abspath(agent_dir)
     source_pattern = os.path.abspath(os.path.join(source_root, pattern))
@@ -127,21 +150,7 @@ def restore_matching(agent_dir, source_dir, pattern):
     if not source_matches and not current_matches:
         raise ValueError(f'Restore pattern matched no paths: "{pattern}"')
 
-    for relative_path in sorted(source_matches | current_matches):
-        source_path = os.path.abspath(os.path.join(source_root, relative_path))
-        target_path = os.path.abspath(os.path.join(agent_root, relative_path))
-
-        if os.path.isdir(target_path):
-            shutil.rmtree(target_path)
-        elif os.path.exists(target_path):
-            os.remove(target_path)
-
-        if os.path.isdir(source_path):
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            shutil.copytree(source_path, target_path)
-        elif os.path.isfile(source_path):
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            shutil.copy2(source_path, target_path)
+    return source_root, agent_root, sorted(source_matches | current_matches)
 
 
 def create_checkpoint(agent_dir, reason):
@@ -219,16 +228,13 @@ def cmd_revert_reason(agent_dir, reason, only=None):
         print(f'ERROR: No checkpoint found with reason: "{reason}"')
         sys.exit(1)
 
-    save_num = create_checkpoint(agent_dir, "auto-save before named revert")
-    print(f"Checkpoint {save_num} created: auto-save before named revert")
-
     target = max(matches)
     source_dir = os.path.join(checkpoints_dir, str(target))
     if only:
-        source_root = os.path.abspath(source_dir)
-        source_pattern = os.path.abspath(os.path.join(source_root, only))
-        if os.path.commonpath([source_root, source_pattern]) != source_root:
-            raise ValueError(f"Restore pattern escapes checkpoint: {only}")
+        _matching_restore_paths(agent_dir, source_dir, only)
+
+    save_num = create_checkpoint(agent_dir, "auto-save before named revert")
+    print(f"Checkpoint {save_num} created: auto-save before named revert")
 
     if only:
         restore_matching(agent_dir, source_dir, only)
@@ -328,7 +334,11 @@ def main():
         if not reason_parts:
             print("ERROR: --revert-reason requires an exact checkpoint reason.")
             sys.exit(1)
-        cmd_revert_reason(agent_dir, " ".join(reason_parts), only=only)
+        try:
+            cmd_revert_reason(agent_dir, " ".join(reason_parts), only=only)
+        except ValueError as exc:
+            print(f"ERROR: {exc}")
+            sys.exit(1)
     elif arg == "--baseline":
         cmd_baseline(agent_dir)
     elif arg == "--list":

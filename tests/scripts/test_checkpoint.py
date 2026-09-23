@@ -71,6 +71,7 @@ def test_revert_reason_only_rejects_parent_traversal(tmp_path) -> None:
     agent_dir = tmp_path / "agent"
     _write_agent_file(agent_dir, "before")
     checkpoint.create_checkpoint(str(agent_dir), "before Workday redirect")
+    checkpoint_count = len(list((agent_dir / ".checkpoints").iterdir()))
 
     with pytest.raises(ValueError, match="escapes checkpoint"):
         checkpoint.cmd_revert_reason(
@@ -79,11 +80,14 @@ def test_revert_reason_only_rejects_parent_traversal(tmp_path) -> None:
             only="../outside.yml",
         )
 
+    assert len(list((agent_dir / ".checkpoints").iterdir())) == checkpoint_count
+
 
 def test_revert_reason_only_fails_when_pattern_matches_nothing(tmp_path) -> None:
     agent_dir = tmp_path / "agent"
     _write_agent_file(agent_dir, "before")
     checkpoint.create_checkpoint(str(agent_dir), "before Workday redirect")
+    checkpoint_count = len(list((agent_dir / ".checkpoints").iterdir()))
 
     with pytest.raises(ValueError, match="matched no paths"):
         checkpoint.cmd_revert_reason(
@@ -91,3 +95,37 @@ def test_revert_reason_only_fails_when_pattern_matches_nothing(tmp_path) -> None
             "before Workday redirect",
             only="topics/missing.yml",
         )
+
+    assert len(list((agent_dir / ".checkpoints").iterdir())) == checkpoint_count
+
+
+def test_main_reports_scoped_restore_error_without_traceback(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    agent_dir = tmp_path / "agent"
+    _write_agent_file(agent_dir, "before")
+    checkpoint.create_checkpoint(str(agent_dir), "before Workday redirect")
+    monkeypatch.setattr(
+        checkpoint,
+        "load_config",
+        lambda: {"agent": {"folder": str(agent_dir)}},
+    )
+    monkeypatch.setattr(
+        checkpoint.sys,
+        "argv",
+        [
+            "checkpoint.py",
+            "--revert-reason",
+            "before Workday redirect",
+            "--only",
+            "topics/missing.yml",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        checkpoint.main()
+
+    assert exc.value.code == 1
+    assert 'ERROR: Restore pattern matched no paths: "topics/missing.yml"' in (
+        capsys.readouterr().out
+    )
