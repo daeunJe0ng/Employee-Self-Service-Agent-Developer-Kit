@@ -82,7 +82,7 @@ def test_workday_tenant_setup_preserves_manual_gates_and_safe_order() -> None:
     tenant = (_WORKDAY_DA / "configure-tenant.md").read_text(encoding="utf-8")
 
     register = tenant.index("## DA3.1 + DA3.2 — Register the API client")
-    policy = tenant.index("## DA3.3 — Scope & activate the authentication policy")
+    policy = tenant.index("## DA3.3 — Verify the signed-in employee authentication policy")
 
     assert register < policy
     assert "Single-tenant SAML pre-gate" in tenant
@@ -91,3 +91,22 @@ def test_workday_tenant_setup_preserves_manual_gates_and_safe_order() -> None:
     assert "Workday cert field is not API-reachable" in tenant
     assert "checkpoints: WD-CONN-102 | gate: manual" in tasks
     assert "checkpoints: WD-API-CLIENT-001 | gate: attest" in tasks
+    assert "There is no separate domain-to-integration-security-group" in tenant
+    assert "Do not look for an OAuth-client restriction" in tenant
+    assert "Existing active policy already allows employee SAML" in tenant
+
+
+def test_workday_portal_tasks_start_only_after_the_admin_gate() -> None:
+    entra = (_WORKDAY_DA / "provision-entra-app.md").read_text(encoding="utf-8")
+    tenant = (_WORKDAY_DA / "configure-tenant.md").read_text(encoding="utf-8")
+    normalized_entra = " ".join(entra.split())
+
+    assert "Workday-side issuer, service-provider ID, and certificate" in normalized_entra
+    assert (
+        "happens in the next phase, after the Workday-administrator gate"
+        in normalized_entra
+    )
+    assert "Do not ask the maker to open Workday" in entra
+    assert tenant.index("## DA3.0 — Workday administrator gate") < tenant.index(
+        "## DA3.0b — Single-tenant SAML pre-gate"
+    )

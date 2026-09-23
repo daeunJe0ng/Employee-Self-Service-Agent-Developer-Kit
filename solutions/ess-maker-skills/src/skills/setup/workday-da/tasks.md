@@ -76,7 +76,7 @@ express; all items start `pending`.
   <!-- id: DA3.1 | role: Workday Administrator | skill: da-3 | automatable: No | checkpoints: WD-API-CLIENT-001 | gate: attest | status: pending -->
 - [ ] **Capture your Workday connection details** — Record the client ID, token endpoint, REST and SOAP base URLs, and tenant name needed to connect.
   <!-- id: DA3.2 | role: Workday Administrator | skill: da-3 | automatable: No | checkpoints: WD-API-CLIENT-001 | gate: attest | status: pending -->
-- [ ] **Activate the Workday authentication policy** — Scope Workday's authentication policy to the new OAuth client, allow SAML sign-in, and activate it.
+- [ ] **Verify employee SAML sign-in policy** — Confirm an active Workday authentication rule allows SAML for the intended employees, or have the Workday administrator review and activate the required change.
   <!-- id: DA3.3 | role: Workday Administrator | skill: da-3 | automatable: No | checkpoints: WD-TENANT-001 | gate: attest | status: pending -->
 - [ ] **Match the signing certificate** — Confirm the Workday-side signing certificate matches the one in Entra (validity dates, or an externally-computed SHA-1 — Workday shows no thumbprint).
   <!-- id: DA3.4 | role: Workday Administrator | skill: da-3 | automatable: No (Workday cert field not API-reachable) | checkpoints: WD-CONN-102 | gate: manual/attest (WD-CONN-102 returns MANUAL — operator compares certificate: dates / external SHA-1) | status: pending -->

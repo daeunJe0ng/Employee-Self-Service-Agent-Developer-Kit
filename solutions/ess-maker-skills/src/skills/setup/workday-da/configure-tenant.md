@@ -28,7 +28,7 @@ files you are reading. **Never** show internal variable names or IDs in chat.
 |------|-----------|------|
 | DA3.1 | `WD-API-CLIENT-001` — Workday API client registered (SAML ****** grant, functional areas, Include Workday Owned Scope = Yes) | attest |
 | DA3.2 | `WD-TENANT-001` — Tenant Setup – Security + connection fields captured | attest |
-| DA3.3 | `WD-TENANT-001` — authentication policy scoped to the OAuth client + activated | attest |
+| DA3.3 | `WD-TENANT-001` — signed-in employee SAML authentication policy verified | attest |
 | DA3.4 | `WD-CONN-102` *(reuse)* — Workday X.509 signing cert matches the Entra one | manual/attest |
 
 Run any one with:
@@ -54,11 +54,9 @@ acknowledgement (enforced by
 
 **Build order.** These tasks must happen in Workday's natural order, which is
 **not** the row-number order: sign-in cert (DA3.0c) → Tenant Setup – Security
-(DA3.0d) → **register the API client (DA3.1 + DA3.2)** → **authentication policy
-(DA3.3)**. The API client is registered **before** the authentication policy
-because the policy must be scoped to the OAuth client identity, which only
-exists once the client is registered. Each section states which checklist row(s)
-it completes.
+(DA3.0d) → **register the API client (DA3.1 + DA3.2)** → **verify the
+signed-in employee authentication policy (DA3.3)**. Each section states which
+checklist row(s) it completes.
 
 **On every resume, always re-run DA3.0 (Workday-admin gate) and DA3.0b
 (single-tenant SAML pre-gate) first — both are idempotent/read-only — before
@@ -280,9 +278,7 @@ Wait for the user, then continue to DA3.1.
 ## DA3.1 + DA3.2 — Register the API client & capture the connection fields
 
 Register the Workday API client, then capture the connection identifiers the
-Workday extension package's connection form needs. **Register the client before
-touching the authentication policy (DA3.3)** — the policy is scoped to this
-client's identity.
+Workday extension package's connection form needs.
 
 **Message:**
 
@@ -292,6 +288,17 @@ In Workday, run the **Register API Client** task with **Client Grant Type = SAML
 **Include Workday Owned Scope = Yes** (this is required for the REST
 `/workers/me` call). Save it, then open **View API Client** for the client you
 just created. Type **done** when you're on the View API Client screen.
+
+**End message.**
+
+**Message:**
+
+This setup uses each signed-in employee's Workday identity. It does **not** use
+an Integration System User, a RaaS report, or an Integration System Security
+Group. The functional areas above define which Workday APIs the client can call;
+the employee's existing Workday security determines which employee data those
+calls may return. There is no separate domain-to-integration-security-group
+mapping step in this setup.
 
 **End message.**
 
@@ -345,22 +352,65 @@ If the user says the client is wrong or fields are missing, leave DA3.1/DA3.2
 
 ---
 
-## DA3.3 — Scope & activate the authentication policy
+## DA3.3 — Verify the signed-in employee authentication policy
 
-Scope the authentication policy to the OAuth client from DA3.1/DA3.2 and activate
-it.
+Verify that the Workday environment permits SAML authentication for the intended
+employee population. Workday tenants vary in how authentication policies are
+organized, and the policy screens may not expose an OAuth-client condition.
+Never invent one, never route this signed-in employee setup through an ISU rule,
+and never enable a disabled policy only to satisfy this checklist.
 
 **Message:**
 
-In Workday, run **Manage Authentication Policies**. Add or edit the policy so it
-is scoped to the **OAuth client you registered in the previous step**, and allow
-**SAML** as an allowed authentication type. Then run **Activate All Pending
-Authentication Policy Changes** to make it live. Type **done** when the changes
-are activated.
+In Workday, open **Manage Authentication Policies** for the environment your
+employees use. With your Workday administrator, verify that an active rule allows
+**SAML** for the intended employee population.
+
+- Do not use an ISU or integration-system security-group rule for this setup.
+- Do not look for an OAuth-client restriction if this tenant's policy screen
+  does not provide one.
+- Preserve administrator access, employee coverage, and existing network/IP
+  restrictions.
+- If the current active policy already allows employee SAML sign-in, no change
+  is needed.
+- If a change is required, review all pending authentication-policy changes
+  before activating them.
 
 **End message.**
 
-Wait for the user, then verify the whole tenant configuration.
+Use the `vscode_askQuestions` tool:
+
+```json
+[
+  {
+    "header": "Employee SAML policy",
+    "question": "What did the Workday administrator confirm for the employee authentication policy?",
+    "options": [
+      {
+        "label": "Existing active policy already allows employee SAML",
+        "description": "No policy change or activation was needed",
+        "recommended": true
+      },
+      {
+        "label": "Reviewed policy change was activated",
+        "description": "The admin preserved employee/admin access and existing network restrictions"
+      },
+      {
+        "label": "Not confirmed yet",
+        "description": "Keep this step in progress"
+      }
+    ],
+    "allowFreeformInput": false
+  }
+]
+```
+
+For either confirmed option, capture the selected policy name or rule and whether
+the existing configuration was reused or a reviewed change was activated. For
+**Not confirmed yet**, leave DA3.3 `in-progress` and stop without blocking or
+resetting completed rows.
+
+Then verify the whole tenant configuration.
 
 **Message:**
 
@@ -375,15 +425,16 @@ are in place.
 python scripts/flightcheck/cli.py --checkpoint WD-TENANT-001 --connect-config ".local/connect/workday-da/config.json"
 ```
 
-This echoes the captured `tenant` / `restBaseUrl` / `soapBaseUrl` / `appIdUri` and
-restates the Tenant Setup – Security and authentication-policy facts to confirm.
+This echoes the captured `tenant` / `restBaseUrl` / `soapBaseUrl` / `appIdUri`
+and restates the Tenant Setup – Security and signed-in employee
+authentication-policy facts to confirm.
 `WD-TENANT-001` always returns `MANUAL`, so render its result in chat per
 [`shared/checklist-updater.md`](shared/checklist-updater.md) §U.0–U.0a — the
 result table **and** its full verification steps — **before** you ask the user to
 confirm. Then update **DA3.3** via
 [`shared/checklist-updater.md`](shared/checklist-updater.md) with
 `STEP_ID="DA3.3"`, `GATE="attest"`, `CHECKPOINT_RESULT="MANUAL"`, `ACK=true` once
-the user confirms the policy is scoped and activated.
+the user confirms one of the two supported outcomes above.
 
 The **functional** proof of all of this comes downstream, when the Workday
 extension package's Dataverse connection authenticates successfully — not
@@ -400,7 +451,7 @@ to resume at the next unverified row.
 **Message:**
 
 Your Workday tenant is configured — the signing certificate, Tenant Security, the
-API client, and the authentication policy are all set. Next I'll review your
-Workday connection and let you know what's left.
+API client, and signed-in employee authentication policy are all set. Next I'll
+review your Workday connection and let you know what's left.
 
 **End message.**

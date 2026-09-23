@@ -630,10 +630,10 @@ Workday must trust. Then:
 One SAML setting can only be set in the portal. Open https://entra.microsoft.com →
 **Enterprise applications** → the Workday app → **Single sign-on** → **SAML
 Signing Certificate** → **Edit** → set **Signing Option** to **Sign SAML response
-and assertion**, and **Save**. Then confirm your Workday tenant's SAML IdP is
-configured with the **Issuer**, **SSO / Login URL**, and **SP audience** shown in
-the check result above, and that it trusts the signing certificate you activated
-earlier. Type **done** when it's set.
+and assertion**, and **Save**. Confirm only this Entra setting here. Workday-side
+issuer, service-provider ID, and certificate verification happens in the next
+phase, after the Workday-administrator gate. Type **done** when the Entra setting
+is saved.
 
 **End message.**
 
@@ -647,13 +647,15 @@ result alone never completes it.
 
 ## DA2.7 — Confirm single-Entra-tenant federation alignment
 
-Confirm exactly one Entra tenant federates to the Workday tenant ESS uses (a
-misaligned or duplicate federation breaks user-context SAML SSO).
+Confirm that the selected Workday SAML application belongs to the same Entra
+tenant selected during `/setup`. This phase stays Entra-only; it does not ask the
+maker to inspect or change Workday before a Workday administrator is available.
 
 **Message:**
 
-Now I'll review the Workday SAML federation to confirm exactly one Entra tenant is
-linked to the Workday tenant your agent uses.
+Now I'll confirm that the selected Workday sign-in application belongs to this
+environment's Microsoft Entra tenant. No Workday portal changes are needed in
+this phase.
 
 **End message.**
 
@@ -664,8 +666,11 @@ python scripts/flightcheck/cli.py --checkpoint WD-CONN-010 --connect-config ".lo
 ```
 
 `WD-CONN-010` summarizes the federated Workday SAML app(s) and their entity IDs.
-Present the result, then — this is an **attest** row — ask the user to confirm the
-alignment and update **DA2.7** via
+Present the result and scope the confirmation to the Entra application selected
+in DA2.1. Do not ask the maker to open Workday or prove the active Workday IdP
+here; DA3.0b performs that comparison after the Workday-administrator gate.
+Then — this is an **attest** row — ask the user to confirm that the selected app
+is the intended Workday tenant application and update **DA2.7** via
 [`shared/checklist-updater.md`](shared/checklist-updater.md) with
 `STEP_ID="DA2.7"`, `GATE="attest"`, `CHECKPOINT_RESULT` = the checkpoint result,
 and `ACK` = the user's explicit confirmation. Persist the DA2.0 `GATE_EVIDENCE`.
