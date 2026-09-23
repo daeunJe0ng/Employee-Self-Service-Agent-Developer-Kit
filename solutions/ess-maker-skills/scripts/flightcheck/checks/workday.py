@@ -368,47 +368,10 @@ WORKFLOWS = [
 # request-template ID types do NOT map 1:1 to GetReferenceData keys and would
 # false-positive on OOTB scenarios. Confirmed on a live tenant 2026-06.)
 
-# Friendly labels for the result text (best-effort; unknown keys print raw).
-_WD_REF_KEY_LABELS = {
-    "ISO_3166-1_Alpha-2_Code": "Countries (ISO alpha-2)",
-    "ISO_3166-1_Alpha-3_Code": "Countries (ISO alpha-3)",
-    "Country_Phone_Code_ID": "Country phone codes",
-    "Phone_Device_Type_ID": "Phone device types",
-    "Communication_Usage_Type_ID": "Communication usage types",
-    "Related_Person_Relationship_ID": "Relationship types",
-    "Government_ID_Type_ID": "Government ID types",
-    "National_ID_Type_Code": "National ID types",
-    "Passport_ID_Type_ID": "Passport ID types",
-    "Visa_ID_Type_ID": "Visa ID types",
-    "Marital_Status_ID": "Marital status",
-    "Gender_ID": "Gender",
-    "Ethnicity_ID": "Ethnicity",
-    "Language_ID": "Languages",
-}
-
-# In the GetReferenceData topic's switch: referenceDataKey = "KEY" -> a SUPPORTED key.
-_WD_REF_SUPPORTED_RE = re.compile(r'referenceDataKey\s*=\s*["\']([^"\']+)["\']')
-# In a calling topic: referenceDataKey: KEY -> a REQUESTED key (literal, same line).
-# A Power Fx expression value (starts with '=') is intentionally not matched (the
-# key isn't statically known), and the GetReferenceData input declaration (no
-# value on the line) is likewise not matched.
-_WD_REF_REQUESTED_RE = re.compile(r'referenceDataKey:[ \t]*([A-Za-z0-9_]+)')
 _WD_REF_SYSTEM_TOPICS = {
     "WorkdaySystemGetReferenceData",
     "WorkdaySystemRefreshReferenceData",
 }
-
-
-def _ref_key_label(key: str) -> str:
-    return _WD_REF_KEY_LABELS.get(key, key)
-
-
-def _extract_requested_reference_keys(topic_data: str) -> set[str]:
-    """Reference keys a topic actually REQUESTS from GetReferenceData — the
-    literal ``referenceDataKey: KEY`` input it passes on each call."""
-    if not topic_data:
-        return set()
-    return set(_WD_REF_REQUESTED_RE.findall(topic_data))
 
 
 def _wd_studio_link(runner) -> str:
@@ -435,13 +398,6 @@ def _wd_studio_link(runner) -> str:
         return _studio_link_md(runner, slug, "the agent in Copilot Studio")
     except Exception:  # noqa: BLE001 — never let link-building break the check
         return "[Copilot Studio](https://copilotstudio.microsoft.com/)"
-
-
-def _extract_supported_reference_keys(topic_data: str) -> set[str]:
-    """Reference keys the GetReferenceData topic supports (its switch)."""
-    if not topic_data:
-        return set()
-    return set(_WD_REF_SUPPORTED_RE.findall(topic_data))
 
 
 def _schema_leaf(schema_name: str) -> str:
@@ -5179,88 +5135,6 @@ def _get_unknown_workday_scenarios(runner) -> list[dict]:
     ]
     runner._workday_unknown_scenarios = unknown
     return unknown
-
-
-def _format_unknown_scenarios(unknown: list[dict]) -> str:
-    """Format the unknown-refs list for the result field. One block per
-    reference, agent + topic + line cited verbatim per AGENTS.md
-    principle #8 (result = what the kit observed).
-    """
-    lines: list[str] = []
-    for ref in unknown:
-        if ref["pattern"] == "system-common-execution":
-            name = ref.get("scenarioName") or "(scenarioName not found in topic)"
-            lines.append(f"  • {name}")
-            lines.append(
-                f"    Topic:    topics/{ref['topic']}:{ref['line']}"
-            )
-            lines.append("    Pattern:  WorkdaySystemGetCommonExecution + scenarioName")
-        else:  # invoke-flow-action
-            lines.append(f"  • <flow-bound, no scenarioName> ({ref.get('flowId', '')})")
-            lines.append(
-                f"    Topic:    topics/{ref['topic']}:{ref['line']}"
-            )
-            lines.append("    Pattern:  InvokeFlowAction → flow bound to shared_workdaysoap")
-        lines.append(f"    Agent:    {ref['agent']}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
-
-
-_WD_WF_CAT_CHECKLIST = (
-    "Manual verification required — the kit cannot validate custom "
-    "Workday scenarios end-to-end. For EACH scenario listed above:\n"
-    "\n"
-    "  1. ISU account: Confirm which ISU registered in Workday is used "
-    "by this scenario. Default is the account in environment variable "
-    "EmployeeContextRequestAccountName (see WD-ENV-001 output). Custom "
-    "scenarios may use a different ISU — verify in the template config "
-    "XML in Dataverse (Power Platform Maker → Tables → "
-    "msdyn_employeeselfservicetemplateconfigs → search ScenarioName).\n"
-    "\n"
-    "  2. Payload shape: Open the template config XML and confirm the "
-    "SOAP request body matches the Workday WSDL for the named service. "
-    "Field names, reference types, and required vs. optional elements "
-    "MUST match the Workday contract. Mismatches surface at runtime as "
-    "the 'Workflow Contract/Payload Mismatch' failure mode.\n"
-    "\n"
-    "  3. Test prompt: Add at least one evaluation test case to the "
-    "agent's evaluations/ folder that exercises the scenario end-to-end "
-    "with a known-good employee. Use /create-eval and tag the test set "
-    "with the scenario name.\n"
-    "\n"
-    "  4. Auth health: Re-check the WD-CONN-* connection token health "
-    "output for the connection reference this scenario uses. "
-    "Intermittent auth failures usually trace to a stale OAuth token "
-    "on one of the ISU refs — reauthenticate in Power Platform Maker "
-    "→ Connections.\n"
-    "\n"
-    "Note: the OOTB Workday catalog is resolved live from the "
-    "customer's own Dataverse "
-    "(msdyn_employeeselfservicetemplateconfigs, filtered by "
-    "ismanaged=true), which auto-detects every scenario the installed "
-    "Workday extension pack ships. A scenario surfacing as MANUAL "
-    "means it is NOT a managed row in the customer's tenant — either "
-    "it is genuinely custom (work through the checklist above) or the "
-    "extension pack is not installed.\n"
-    "\n"
-    "Found a new pattern? Log it back to the gap-discovery process. "
-    "File an issue at "
-    "https://github.com/microsoft/Employee-Self-Service-Agent-Developer-Kit/issues/new "
-    "with title 'Workday gap-discovery: <short summary>' if any of "
-    "the following apply:\n"
-    "  • This MANUAL row surfaced a scenario that you believe should "
-    "ship OOTB in the Workday extension pack (forward to Microsoft "
-    "ESS so the next pack revision can include it).\n"
-    "  • A Workday-bound topic in your agent did NOT surface here but "
-    "should have (the detection walker missed a new wiring pattern — "
-    "Pattern C or beyond; attach the topic YAML snippet so a new "
-    "detection rule can be added to _scan_topic_for_workday_refs).\n"
-    "  • The 4-item checklist above was insufficient for diagnosing "
-    "your scenario (propose the additional verification step).\n"
-    "Include the topic YAML snippet, the scenarioName / flowId, and "
-    "the ADO incident number if any. Closing the loop here is how "
-    "WD-WF-CAT-001 gets better over time."
-)
 
 
 def _check_custom_workflow_inventory(runner) -> list[CheckResult]:
