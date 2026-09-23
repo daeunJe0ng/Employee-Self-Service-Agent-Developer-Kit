@@ -131,6 +131,30 @@ def _write_topic_invoke_flow_action(
     )
 
 
+def test_discovery_honors_explicit_agent_slug(tmp_path: Path) -> None:
+    from flightcheck.checks.workday import _discover_customer_workday_scenarios
+
+    agents_root = tmp_path / "workspace" / "agents"
+    _write_topic_system_common_execution(
+        agents_root / "selected-agent" / "topics" / "selected.mcs.yml",
+        scenario_name="HRWorkdayHCMSelected",
+    )
+    _write_topic_system_common_execution(
+        agents_root / "other-agent" / "topics" / "other.mcs.yml",
+        scenario_name="HRWorkdayHCMOther",
+    )
+
+    discovered = _discover_customer_workday_scenarios(
+        agents_root,
+        "selected-agent",
+    )
+
+    assert {item["agent"] for item in discovered} == {"selected-agent"}
+    assert {item["scenarioName"] for item in discovered} == {
+        "HRWorkdayHCMSelected"
+    }
+
+
 def _write_workflow(
     agent_dir: Path,
     *,
