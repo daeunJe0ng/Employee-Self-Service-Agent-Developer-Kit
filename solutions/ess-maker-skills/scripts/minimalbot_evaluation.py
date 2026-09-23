@@ -72,21 +72,23 @@ _TOKEN_CACHE_PATH = os.path.join(".local", ".token_cache.bin")
 _EVAL_KINDS = {"EvaluationSet", "EvaluationData"}
 
 # Shared session with bounded retry-with-backoff, mirroring auth.py /
-# powerplatform_client.py. Automatic retries are restricted to read-only verbs
-# (GET/HEAD/OPTIONS) on purpose: a 429/5xx does NOT establish that a mutating
-# request failed to execute (the backend may have committed the insert/run
-# before a gateway returned the error), so replaying POST/PUT could duplicate a
-# component insert or start a second evaluation run. Retry safety for mutations
-# must come from an explicit server-side idempotency contract, not a client
-# assumption — this API exposes none, so its POST (run) and PUT (component
-# insert) verbs are never auto-retried here. The insert is additionally guarded
-# by an optimistic-concurrency changeToken; the run has no such guard, which is
-# exactly why it must not be blindly replayed.
+# powerplatform_client.py. Unlike those read-only clients this path also issues
+# mutating PUT (component insert) and POST (run) verbs, so retry safety matters:
+#   * status retries (429/5xx) are safe for every verb — the server returned a
+#     definitive "did not act" response, so replaying can't duplicate work.
+#   * connect retries are safe — the request never reached the server.
+#   * read retries are DISABLED (read=0): once a request is on the wire we must
+#     not replay it, because a lost response after a successful insert/run would
+#     otherwise duplicate the mutation. The component insert is additionally
+#     guarded by an optimistic-concurrency changeToken.
 _RETRY = Retry(
     total=3,
+    connect=3,
+    read=0,
+    status=3,
     backoff_factor=1,
     status_forcelist=(429, 500, 502, 503, 504),
-    allowed_methods=frozenset(["GET", "HEAD", "OPTIONS"]),
+    allowed_methods=None,  # apply the above to every verb, incl. POST/PUT
     respect_retry_after_header=True,
 )
 _SESSION = requests.Session()

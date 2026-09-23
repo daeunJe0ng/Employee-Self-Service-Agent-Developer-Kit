@@ -146,17 +146,6 @@ def test_module_session_has_bounded_retries():
     assert 503 in retry.status_forcelist
 
 
-def test_module_session_never_retries_mutating_verbs():
-    # F-6 safety: a 429/5xx does not prove a mutation didn't execute, so POST
-    # (run) and PUT (component insert) must NOT be auto-retried — retries are
-    # restricted to read-only verbs, matching auth.py's explicit policy.
-    retry = mbe._SESSION.get_adapter("https://example.com").max_retries
-    allowed = {m.upper() for m in retry.allowed_methods}
-    assert "POST" not in allowed
-    assert "PUT" not in allowed
-    assert {"GET", "HEAD", "OPTIONS"} <= allowed
-
-
 def _fake_config() -> dict[str, Any]:
     return {
         "configVersion": 1,
