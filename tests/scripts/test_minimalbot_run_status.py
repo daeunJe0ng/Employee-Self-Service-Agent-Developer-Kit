@@ -15,6 +15,7 @@ import argparse
 from typing import Any
 
 import pytest
+import requests
 
 import minimalbot_evaluation as mbe
 import evaluation_runs
@@ -37,7 +38,7 @@ def _client_with(responses: list[tuple[int, Any]]) -> mbe.MinimalBotEvaluationCl
     calls: list[dict[str, Any]] = []
     queue = list(responses)
 
-    def fake_request(method, url, *, body=None, params=None):
+    def fake_request(method, url, *, body=None, params=None, operation="request"):
         calls.append({"method": method, "url": url, "body": body, "params": params})
         status, payload = queue.pop(0)
         return _FakeResponse(status), payload
@@ -93,6 +94,56 @@ def test_get_test_run_raises_on_http_error():
     client = _client_with([(404, {})])
     with pytest.raises(mbe.MinimalBotEvaluationError):
         client.get_test_run("missing")
+
+
+def test_run_test_set_rejects_202_without_run_id():
+    # F-5: a 202 whose body carries no runId/id is unusable (the run can't be
+    # tracked), so it must raise instead of reporting a phantom success.
+    client = _client_with([
+        (200, {"bot": {"schemaName": "s"}, "connectionReferenceChanges": []}),
+        (202, {}),  # accepted, but no runId/id
+    ])
+    with pytest.raises(mbe.MinimalBotEvaluationError) as exc:
+        client.run_test_set("test-set-1", mcs_connection_id="mcs-conn")
+    assert "no runId/id" in str(exc.value)
+
+
+def test_run_test_set_succeeds_with_run_id():
+    # Positive control: a 202 with a runId returns cleanly.
+    client = _client_with([
+        (200, {"bot": {"schemaName": "s"}, "connectionReferenceChanges": []}),
+        (202, {"runId": "run-42"}),
+    ])
+    result = client.run_test_set("test-set-1", mcs_connection_id="mcs-conn")
+    assert result["runId"] == "run-42"
+
+
+def test_request_translates_transport_error(monkeypatch):
+    # F-6: a requests.RequestException must surface as a MinimalBotEvaluationError
+    # carrying operation context, not a raw traceback.
+    client = mbe.MinimalBotEvaluationClient(ENV_ID, BOT_ID, "tenant-1")
+    client._token = "fake-token"
+
+    def boom(*args, **kwargs):
+        raise requests.ConnectionError("name resolution failed")
+
+    monkeypatch.setattr(mbe._SESSION, "request", boom)
+
+    with pytest.raises(mbe.MinimalBotEvaluationError) as exc:
+        client.read_components()
+    msg = str(exc.value)
+    assert "component read" in msg
+    assert "transport error" in msg
+
+
+def test_module_session_has_bounded_retries():
+    # F-6: the shared session must mount a bounded retry adapter for transient
+    # statuses (no unbounded raw requests.request calls).
+    adapter = mbe._SESSION.get_adapter("https://example.com")
+    retry = adapter.max_retries
+    assert retry.total == 3
+    assert 429 in retry.status_forcelist
+    assert 503 in retry.status_forcelist
 
 
 def _fake_config() -> dict[str, Any]:

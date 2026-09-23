@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime, timezone
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -40,6 +41,8 @@ except ImportError:  # pragma: no cover - dependency guard mirrors siblings
 
 try:
     import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
 except ImportError:  # pragma: no cover - dependency guard mirrors siblings
     raise SystemExit("ERROR: 'requests' package not found. Run: pip install requests")
 
@@ -67,6 +70,29 @@ MAKEREVAL_API_VERSION = "2024-10-01"
 MCS_CONNECTOR = "shared_microsoftcopilotstudio"
 _TOKEN_CACHE_PATH = os.path.join(".local", ".token_cache.bin")
 _EVAL_KINDS = {"EvaluationSet", "EvaluationData"}
+
+# Shared session with bounded retry-with-backoff, mirroring auth.py /
+# powerplatform_client.py. Unlike those read-only clients this path also issues
+# mutating PUT (component insert) and POST (run) verbs, so retry safety matters:
+#   * status retries (429/5xx) are safe for every verb — the server returned a
+#     definitive "did not act" response, so replaying can't duplicate work.
+#   * connect retries are safe — the request never reached the server.
+#   * read retries are DISABLED (read=0): once a request is on the wire we must
+#     not replay it, because a lost response after a successful insert/run would
+#     otherwise duplicate the mutation. The component insert is additionally
+#     guarded by an optimistic-concurrency changeToken.
+_RETRY = Retry(
+    total=3,
+    connect=3,
+    read=0,
+    status=3,
+    backoff_factor=1,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=None,  # apply the above to every verb, incl. POST/PUT
+    respect_retry_after_header=True,
+)
+_SESSION = requests.Session()
+_SESSION.mount("https://", HTTPAdapter(max_retries=_RETRY))
 
 
 class MinimalBotEvaluationError(RuntimeError):
@@ -191,6 +217,23 @@ def _wire_kinds(value: Any) -> Any:
     if isinstance(value, list):
         return [_wire_kinds(child) for child in value]
     return value
+
+
+def _folder_matches_globs(folder: Path, root: Path, only_globs: list[str]) -> bool:
+    """True if any ``*.mcs.yml`` in ``folder`` matches one of ``only_globs``.
+
+    ``only_globs`` are agent-root-relative, forward-slash patterns (the same
+    ones ``push.py --only`` builds and ``push.matches_only`` consumes), so the
+    folder's files are compared as forward-slash paths relative to ``root``.
+    """
+    for path in folder.glob("*.mcs.yml"):
+        try:
+            rel = path.relative_to(root).as_posix()
+        except ValueError:
+            rel = path.as_posix()
+        if any(fnmatch.fnmatch(rel, glob) for glob in only_globs):
+            return True
+    return False
 
 
 def _safe_name(value: str, fallback: str) -> str:
@@ -365,19 +408,28 @@ class MinimalBotEvaluationClient:
         *,
         body: dict[str, Any] | None = None,
         params: dict[str, str] | None = None,
+        operation: str = "request",
     ) -> tuple[requests.Response, Any]:
         auth_value = " ".join(("Bearer", self._require_token()))
-        response = requests.request(
-            method,
-            url,
-            headers={
-                "Authorization": auth_value,
-                "Content-Type": "application/json",
-            },
-            json=body,
-            params=params,
-            timeout=120,
-        )
+        try:
+            response = _SESSION.request(
+                method,
+                url,
+                headers={
+                    "Authorization": auth_value,
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                params=params,
+                timeout=120,
+            )
+        except requests.RequestException as exc:
+            # Translate transport failures (timeout, DNS, connection reset,
+            # exhausted retries on a transient 429/5xx) into the module's error
+            # type so callers get operation context instead of a raw traceback.
+            raise MinimalBotEvaluationError(
+                f"MinimalBot {operation} failed (transport error): {exc}"
+            ) from exc
         try:
             content = response.json()
         except ValueError:
@@ -393,7 +445,8 @@ class MinimalBotEvaluationClient:
 
     def read_components(self) -> dict[str, Any]:
         """Read all bot components (and the current changeToken)."""
-        response, body = self._request("POST", self._components_url, body={})
+        response, body = self._request(
+            "POST", self._components_url, body={}, operation="component read")
         if response.status_code != 200:
             raise MinimalBotEvaluationError(
                 f"MinimalBot component read failed (HTTP {response.status_code})."
@@ -410,12 +463,19 @@ class MinimalBotEvaluationClient:
         agent_folder: Path,
         *,
         dry_run: bool = False,
+        only_globs: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Push every ``evaluations/<set>/`` folder under ``agent_folder``.
+        """Push ``evaluations/<set>/`` folders under ``agent_folder``.
 
         Mirrors the POC's fresh-insert model: each push inserts a brand-new
         copy of every evaluation set (new component IDs, timestamped display
         name) so repeated pushes never collide with optimistic concurrency.
+
+        ``only_globs`` (from ``push.py --only``) restricts the push to the
+        evaluation sets whose files match at least one glob. Because each push
+        mints fresh component IDs, honouring the scope is a correctness
+        requirement — pushing unscoped sets would duplicate every unrelated
+        deployed set on a targeted update.
         """
         eval_root = Path(agent_folder) / "evaluations"
         if not eval_root.is_dir():
@@ -430,6 +490,21 @@ class MinimalBotEvaluationClient:
             raise MinimalBotEvaluationError(
                 f"No evaluation sets found under {eval_root}."
             )
+
+        if only_globs:
+            root = Path(agent_folder)
+            scoped = [
+                folder for folder in set_folders
+                if _folder_matches_globs(folder, root, only_globs)
+            ]
+            if not scoped:
+                raise MinimalBotEvaluationError(
+                    "No evaluation sets matched the requested --only/--only-from "
+                    f"scope: {only_globs}. Refusing to fall back to a broader "
+                    "push (an unscoped MinimalBot push would duplicate every "
+                    "deployed set)."
+                )
+            set_folders = scoped
 
         changes: list[dict[str, Any]] = []
         pushed_sets: list[dict[str, str]] = []
@@ -464,7 +539,8 @@ class MinimalBotEvaluationClient:
             "connectorDefinitionChanges": [],
         }
 
-        response, _ = self._request("PUT", self._components_url, body=payload)
+        response, _ = self._request(
+            "PUT", self._components_url, body=payload, operation="push")
         if response.status_code != 200:
             raise MinimalBotEvaluationError(
                 f"MinimalBot push failed (HTTP {response.status_code})."
@@ -509,6 +585,28 @@ class MinimalBotEvaluationClient:
 
         parents = [item for item in documents if item[1].get("kind") == "EvaluationSet"]
         cases = [item for item in documents if item[1].get("kind") == "EvaluationData"]
+        # Never silently omit authored files. Any document whose kind this
+        # transport can't convert (e.g. MultiTurnEvaluationCase, which is a
+        # supported authored child elsewhere in the kit) must fail the push
+        # rather than deploy a set that differs from local source.
+        unsupported = [
+            item for item in documents
+            if item[1].get("kind") not in _EVAL_KINDS
+        ]
+        if unsupported:
+            details = ", ".join(
+                f"{path.name} (kind={doc.get('kind') or 'missing'})"
+                for path, doc in unsupported
+            )
+            raise MinimalBotEvaluationError(
+                f"Evaluation folder {folder.name} contains file(s) the "
+                "Dataverse-free (MinimalBot) push does not support: "
+                f"{details}. This transport only converts EvaluationSet and "
+                "EvaluationData; multi-turn cases (MultiTurnEvaluationCase) "
+                "cannot be pushed this way yet. Remove or relocate the "
+                "unsupported file(s), or push this set through a "
+                "Dataverse-backed agent."
+            )
         if len(parents) != 1:
             raise MinimalBotEvaluationError(
                 f"Evaluation folder {folder.name} must contain exactly one "
@@ -598,6 +696,7 @@ class MinimalBotEvaluationClient:
                 "api-version": "1",
                 "$filter": f"environment eq '{self.environment_id}'",
             },
+            operation="connection discovery",
         )
         if response.status_code != 200:
             raise MinimalBotEvaluationError(
@@ -695,7 +794,8 @@ class MinimalBotEvaluationClient:
             f"/bots/{self.bot_id}/api/makerevaluation/testsets/{test_set_id}/run"
             f"?api-version={MAKEREVAL_API_VERSION}"
         )
-        response, result = self._request("POST", run_url, body=body)
+        response, result = self._request(
+            "POST", run_url, body=body, operation="evaluation run")
         service_request_id = (
             response.headers.get("x-ms-service-request-id")
             or response.headers.get("x-ms-request-id")
@@ -708,6 +808,15 @@ class MinimalBotEvaluationClient:
         run_id = ""
         if isinstance(result, dict):
             run_id = str(result.get("runId") or result.get("id") or "")
+        if not run_id:
+            # A 202 with no run identifier is unusable: the run cannot be
+            # tracked or queried afterwards. Fail loudly rather than reporting
+            # a phantom success with an empty ID.
+            raise MinimalBotEvaluationError(
+                "MinimalBot evaluation run was accepted (HTTP 202) but the "
+                "response contained no runId/id, so the run cannot be tracked. "
+                f"Response: {result}"
+            )
         return {
             "runId": run_id,
             "testSetId": test_set_id,
@@ -738,7 +847,7 @@ class MinimalBotEvaluationClient:
             f"{self._makereval_base}/testruns"
             f"?api-version={MAKEREVAL_API_VERSION}"
         )
-        response, body = self._request("GET", url)
+        response, body = self._request("GET", url, operation="run-history read")
         if response.status_code != 200:
             raise MinimalBotEvaluationError(
                 f"MinimalBot run-history read failed (HTTP {response.status_code})."
@@ -765,7 +874,7 @@ class MinimalBotEvaluationClient:
             f"{self._makereval_base}/testruns/{run_id}"
             f"?api-version={MAKEREVAL_API_VERSION}"
         )
-        response, body = self._request("GET", url)
+        response, body = self._request("GET", url, operation="run results read")
         if response.status_code != 200:
             raise MinimalBotEvaluationError(
                 f"MinimalBot run results read failed (HTTP {response.status_code})."

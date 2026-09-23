@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import fetch_and_setup
 
 
@@ -76,7 +78,11 @@ class TestResolveRefreshTarget:
 
     def test_partial_overrides_prefer_args_then_config(self):
         env, _, bot, name, schema, _ = fetch_and_setup._resolve_refresh_target(
-            _args(url="https://new-env.crm.dynamics.com", name="New Name"),
+            _args(
+                url="https://new-env.crm.dynamics.com",
+                environment_id="new-environment-id",
+                name="New Name",
+            ),
             _config(),
         )
         assert env == "https://new-env.crm.dynamics.com"
@@ -87,7 +93,11 @@ class TestResolveRefreshTarget:
     def test_managed_reflects_flag_only_when_retargeting(self):
         # Retargeting (--url given): managed reflects the flag literally.
         _, _, _, _, _, managed = fetch_and_setup._resolve_refresh_target(
-            _args(url="https://new-env.crm.dynamics.com", managed=False),
+            _args(
+                url="https://new-env.crm.dynamics.com",
+                environment_id="new-environment-id",
+                managed=False,
+            ),
             _config(),
         )
         assert managed is False  # new env declared unmanaged
@@ -110,6 +120,28 @@ class TestResolveRefreshTarget:
         )
 
         assert environment_id == "agent-environment-id"
+
+    def test_url_retarget_without_environment_id_is_rejected(self):
+        # Regression: retargeting to a new env without --environment-id must
+        # NOT reuse the previous target's stored ID (which would persist a
+        # mismatched URL/ID pair). It raises so the caller can require the ID.
+        with pytest.raises(ValueError) as exc:
+            fetch_and_setup._resolve_refresh_target(
+                _args(url="https://new-env.crm.dynamics.com"),
+                _config(),
+            )
+        assert "--environment-id" in str(exc.value)
+
+    def test_url_retarget_with_environment_id_uses_new_id(self):
+        # The explicit new-env ID is used verbatim (never the stored one).
+        _, environment_id, *_ = fetch_and_setup._resolve_refresh_target(
+            _args(
+                url="https://new-env.crm.dynamics.com",
+                environment_id="new-environment-id",
+            ),
+            _config(),
+        )
+        assert environment_id == "new-environment-id"
 
 
 class TestFetchComponents:

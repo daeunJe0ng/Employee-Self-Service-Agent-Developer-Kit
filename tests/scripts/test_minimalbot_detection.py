@@ -322,3 +322,147 @@ def test_warn_minimalbot_non_eval_changes_silent_for_eval_only(tmp_path, capsys)
 
     push._warn_minimalbot_non_eval_changes(str(agent_dir))
     assert "will NOT be pushed" not in capsys.readouterr().out
+
+
+# -- MinimalBot push scoping / gate / kind-safety regressions ----------------
+
+
+def _write_eval_set(root, name, *, kind="EvaluationData", cases=("case1",)):
+    """Create evaluations/<name>/ with one EvaluationSet parent + child files."""
+    folder = root / "evaluations" / name
+    folder.mkdir(parents=True)
+    (folder / f"{name}.mcs.yml").write_text(
+        f"kind: EvaluationSet\ndisplayName: {name}\n", encoding="utf-8")
+    for case in cases:
+        (folder / f"{case}.mcs.yml").write_text(
+            f"kind: {kind}\nrows:\n  - question: q\n    expectedResponse: a\n",
+            encoding="utf-8",
+        )
+    return folder
+
+
+def _mb_client():
+    return mbe.MinimalBotEvaluationClient(ENV_ID, BOT_ID, "tenant-1")
+
+
+def test_scoped_minimalbot_push_only_touches_matching_set(tmp_path):
+    # F-1: a scoped push must NOT silently expand to every set. With two sets
+    # on disk and a glob that matches only one, the plan carries just that set.
+    _write_eval_set(tmp_path, "compensation")
+    _write_eval_set(tmp_path, "benefits")
+
+    plan = _mb_client().push_agent_evaluations(
+        str(tmp_path),
+        dry_run=True,
+        only_globs=["evaluations/compensation/*"],
+    )
+    assert [s["folder"] for s in plan["sets"]] == ["compensation"]
+
+
+def test_scoped_minimalbot_push_raises_when_nothing_matches(tmp_path):
+    # F-1: an unmatched scope must fail loudly, never fall back to a broad push.
+    _write_eval_set(tmp_path, "compensation")
+
+    with pytest.raises(mbe.MinimalBotEvaluationError) as exc:
+        _mb_client().push_agent_evaluations(
+            str(tmp_path),
+            dry_run=True,
+            only_globs=["evaluations/does-not-exist/*"],
+        )
+    assert "No evaluation sets matched" in str(exc.value)
+
+
+def test_minimalbot_push_rejects_multiturn_case(tmp_path):
+    # F-4: a MultiTurnEvaluationCase child must not be silently dropped — the
+    # push fails rather than deploying a set that differs from local source.
+    _write_eval_set(tmp_path, "compensation", kind="MultiTurnEvaluationCase")
+
+    with pytest.raises(mbe.MinimalBotEvaluationError) as exc:
+        _mb_client().push_agent_evaluations(str(tmp_path), dry_run=True)
+    msg = str(exc.value)
+    assert "MultiTurnEvaluationCase" in msg
+    assert "does not support" in msg
+
+
+class _RecordingClient:
+    """Fake MinimalBot client capturing the push/auth ordering for the gate."""
+
+    def __init__(self):
+        self.signed_in_username = "tester@example.com"
+        self.authenticated = False
+        self.real_push = False
+
+    def authenticate(self):
+        self.authenticated = True
+
+    def push_agent_evaluations(self, agent_dir, *, dry_run=False, only_globs=None):
+        if dry_run:
+            return {"dryRun": True, "sets": [
+                {"folder": "compensation", "displayName": "compensation",
+                 "testSetId": "plan-id", "cases": "1"}], "componentCount": 2}
+        self.real_push = True
+        return {"dryRun": False, "sets": [
+            {"folder": "compensation", "displayName": "compensation",
+             "testSetId": "real-id", "cases": "1"}],
+            "componentCount": 2, "verifiedComponents": 2}
+
+
+def _patch_client(monkeypatch, fake):
+    monkeypatch.setattr(
+        push.MinimalBotEvaluationClient, "from_config",
+        classmethod(lambda cls, config: fake),
+    )
+
+
+def test_minimalbot_push_prompts_before_mutating(tmp_path, monkeypatch, capsys):
+    # F-2: the script-level confirmation gate must run BEFORE any mutation.
+    # Answering "no" cancels without authenticating or pushing for real.
+    _write_eval_set(tmp_path, "compensation")
+    fake = _RecordingClient()
+    _patch_client(monkeypatch, fake)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "no")
+
+    push._minimalbot_push(_minimalbot_config(str(tmp_path)), auto_yes=False)
+
+    out = capsys.readouterr().out
+    assert "Push cancelled." in out
+    assert fake.authenticated is False
+    assert fake.real_push is False
+
+
+def test_minimalbot_push_yes_flag_bypasses_prompt(tmp_path, monkeypatch, capsys):
+    # F-2: --yes preserves its bypass semantics for the MinimalBot transport.
+    _write_eval_set(tmp_path, "compensation")
+    fake = _RecordingClient()
+    _patch_client(monkeypatch, fake)
+
+    def _no_input(*a, **k):  # pragma: no cover - must never be reached
+        raise AssertionError("input() must not be called when --yes is set")
+
+    monkeypatch.setattr("builtins.input", _no_input)
+
+    push._minimalbot_push(_minimalbot_config(str(tmp_path)), auto_yes=True)
+
+    out = capsys.readouterr().out
+    assert fake.authenticated is True
+    assert fake.real_push is True
+    assert "Pushed 1 evaluation set(s)" in out
+
+
+def test_minimalbot_dry_run_never_mutates(tmp_path, monkeypatch, capsys):
+    # F-2: a dry run must remain non-mutating and must not prompt.
+    _write_eval_set(tmp_path, "compensation")
+    fake = _RecordingClient()
+    _patch_client(monkeypatch, fake)
+
+    def _no_input(*a, **k):  # pragma: no cover - must never be reached
+        raise AssertionError("dry run must not prompt")
+
+    monkeypatch.setattr("builtins.input", _no_input)
+
+    push._minimalbot_push(_minimalbot_config(str(tmp_path)), dry_run=True)
+
+    out = capsys.readouterr().out
+    assert "Dry run — no changes pushed" in out
+    assert fake.authenticated is False
+    assert fake.real_push is False

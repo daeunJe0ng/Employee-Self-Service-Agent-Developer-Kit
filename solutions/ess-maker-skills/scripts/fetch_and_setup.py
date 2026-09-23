@@ -254,11 +254,25 @@ def _resolve_refresh_target(args, config):
     agent = config.get("agent", {})
     retargeting = bool(args.url)
     env_url = args.url.rstrip("/") if args.url else config["dataverseEndpoint"]
-    environment_id = (
-        args.environment_id
-        or agent.get("environmentId")
-        or config.get("environmentId")
-    )
+    if retargeting:
+        # Retargeting to a different environment: the stored environment ID
+        # belongs to the PREVIOUS target, so falling back to it would persist a
+        # mismatched URL/ID pair that evaluation runs (which trust the cached
+        # ID first) later execute against the wrong environment. Require an
+        # explicit ID for the new environment instead.
+        if not args.environment_id:
+            raise ValueError(
+                "--refresh --url retargets to a different environment; pass "
+                "--environment-id for the new environment. Refusing to reuse "
+                "the stored environment ID from the previous target."
+            )
+        environment_id = args.environment_id
+    else:
+        environment_id = (
+            args.environment_id
+            or agent.get("environmentId")
+            or config.get("environmentId")
+        )
     bot_id = args.bot_id or agent.get("botId")
     name = args.name or agent.get("name")
     schema = args.schema or agent.get("schemaName")
@@ -319,15 +333,18 @@ def main():
     # retarget to a different env/bot (see _resolve_refresh_target) ---
     if args.refresh:
         config = load_config()
-        (
-            env_url,
-            environment_id,
-            bot_id,
-            name,
-            schema,
-            managed,
-        ) = _resolve_refresh_target(
-            args, config)
+        try:
+            (
+                env_url,
+                environment_id,
+                bot_id,
+                name,
+                schema,
+                managed,
+            ) = _resolve_refresh_target(
+                args, config)
+        except ValueError as exc:
+            parser.error(str(exc))
 
         if args.url:
             print(f"Retargeting refresh to {env_url} (bot {bot_id})")
