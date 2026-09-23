@@ -365,6 +365,42 @@ class TestWorkdayExtensionCheckpoints:
             assert cp in keys
 
 
+class TestWorkdayDaComponentCheckpoints:
+    """DA Workday component checks are flowless AgentBuilder reads."""
+
+    def test_wd_ref_uses_agentbuilder_without_dataverse(self):
+        spec = registry.resolve("WD-REF-001")
+        assert spec is not None and spec.key == "WD-REF-001"
+        assert spec.category_label == "Workday"
+        assert spec.category_fn is run_workday_checks
+        assert spec.clients == frozenset({registry.AGENTBUILDER})
+        assert spec.requires_dataverse_endpoint is False
+        assert Role.ESS_MAKER.value in spec.roles
+        assert Role.WORKDAY_ADMIN.value in spec.roles
+
+    def test_wd_wf_cat_exact_entry_beats_legacy_wd_wf_family(self):
+        spec = registry.resolve("WD-WF-CAT-001")
+        assert spec is not None and spec.key == "WD-WF-CAT-001"
+        assert spec.category_label == "Workday"
+        assert spec.category_fn is run_workday_checks
+        assert spec.clients == frozenset({registry.AGENTBUILDER})
+        assert spec.requires_dataverse_endpoint is False
+        assert Role.ESS_MAKER.value in spec.roles
+
+    def test_component_plans_are_agentbuilder_only(self):
+        for checkpoint_id in ("WD-REF-001", "WD-WF-CAT-001"):
+            plan = registry.transitive_requirements(checkpoint_id)
+            assert plan.clients == frozenset({registry.AGENTBUILDER})
+            assert plan.requires_config is True
+            assert plan.requires_dataverse_endpoint is False
+            assert [label for label, _ in plan.ordered_fns] == ["Workday"]
+
+    def test_both_component_checks_are_listable(self):
+        keys = {spec.key for spec in registry.list_checkpoints()}
+        assert "WD-REF-001" in keys
+        assert "WD-WF-CAT-001" in keys
+
+
 class TestTopicCheckpoints:
     """skill-6 mints two FAMILY checkpoints (one row per new/custom topic),
     both sharing checks/topics.run_topic_checks, category "Workday Topics".

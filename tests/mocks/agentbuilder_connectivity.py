@@ -174,6 +174,40 @@ def shared_connection_parameters_json_string(**kwargs: Any) -> str:
     return json.dumps(shared_connection_parameters(**kwargs))
 
 
+def bot_component_change(*, schema_name: str) -> dict[str, Any]:
+    """One ``botComponentChanges`` entry in the validated minimalBots
+    components shape.
+
+    Source (validated):
+      tests/fixtures/cassettes/agentbuilder_readiness.yaml covers
+      POST /copilotstudio/minimalBots/api/{agentId}/components with a
+      top-level ``botComponentChanges`` list. Captured payload variants in
+      this repo use either ``botComponent.name`` or ``component.schemaName``;
+      tests use the current ``botComponent.name`` shape consumed by
+      FlightCheck.
+    """
+    return {
+        "changeType": "Insert",
+        "botComponent": {
+            "name": schema_name,
+            "componentType": 9,
+            "content": "{}",
+        },
+    }
+
+
+def components_with_bot_components(
+    *,
+    bot_components: Iterable[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """``components()`` with ``botComponentChanges`` replaced."""
+    payload = components()
+    payload["botComponentChanges"] = (
+        [] if bot_components is None else list(bot_components)
+    )
+    return payload
+
+
 def components_with_references(
     *,
     references: Iterable[dict[str, Any]] | None = None,

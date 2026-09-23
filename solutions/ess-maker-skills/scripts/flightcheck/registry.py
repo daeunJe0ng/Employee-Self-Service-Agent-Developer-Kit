@@ -378,6 +378,30 @@ _SPECS: list[CheckpointSpec] = [
         roles=(Role.POWER_PLATFORM_ADMIN.value,),
         is_family=True,
     ),
+    # WD-REF-001 — Workday write-topic reference-data component inventory.
+    # Reads DA botComponentChanges via AgentBuilder; no Dataverse endpoint.
+    CheckpointSpec(
+        key="WD-REF-001",
+        category_fn=run_workday_checks,
+        category_label="Workday",
+        clients=frozenset({AGENTBUILDER}),
+        requires_config=True,
+        requires_dataverse_endpoint=False,
+        priority=Priority.HIGH.value,
+        roles=(Role.ESS_MAKER.value, Role.WORKDAY_ADMIN.value),
+    ),
+    # WD-WF-CAT-001 — Workday topic component inventory. Exact entry must
+    # beat the legacy WD-WF family so the DA structural check stays flowless.
+    CheckpointSpec(
+        key="WD-WF-CAT-001",
+        category_fn=run_workday_checks,
+        category_label="Workday",
+        clients=frozenset({AGENTBUILDER}),
+        requires_config=True,
+        requires_dataverse_endpoint=False,
+        priority=Priority.HIGH.value,
+        roles=(Role.ESS_MAKER.value,),
+    ),
     # WD-WF-* — per-workflow SOAP runtime checks (skipped on the simplified
     # flavor; registered for completeness). Emitted with category
     # "Workday Workflows" but owned by run_workday_checks.
@@ -636,6 +660,7 @@ OWNED_PREFIXES: tuple = (
     "WD-CONN",
     "WD-RUN",
     "WD-FLOW",
+    "WD-REF",
     "WD-WF",
     "WD-ENV",
     "WD-ENTRA",
