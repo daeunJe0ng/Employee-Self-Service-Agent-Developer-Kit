@@ -99,6 +99,102 @@ def test_revert_reason_only_fails_when_pattern_matches_nothing(tmp_path) -> None
     assert len(list((agent_dir / ".checkpoints").iterdir())) == checkpoint_count
 
 
+@pytest.mark.parametrize("pattern", [".", "topics/..", "**"])
+def test_revert_reason_only_rejects_agent_root_matches(
+    tmp_path, pattern
+) -> None:
+    agent_dir = tmp_path / "agent"
+    topic_dir = agent_dir / "topics"
+    topic_dir.mkdir(parents=True)
+    (topic_dir / "topic.yml").write_text("before", encoding="utf-8")
+    checkpoint.create_checkpoint(str(agent_dir), "before Workday redirect")
+    checkpoint_count = len(list((agent_dir / ".checkpoints").iterdir()))
+
+    with pytest.raises(
+        ValueError, match="agent root|protected path"
+    ):
+        checkpoint.cmd_revert_reason(
+            str(agent_dir),
+            "before Workday redirect",
+            only=pattern,
+        )
+
+    assert agent_dir.exists()
+    assert len(list((agent_dir / ".checkpoints").iterdir())) == checkpoint_count
+
+
+@pytest.mark.parametrize("pattern", [".checkpoints/**", ".baseline/**"])
+def test_revert_reason_only_rejects_protected_recovery_paths(
+    tmp_path, pattern
+) -> None:
+    agent_dir = tmp_path / "agent"
+    _write_agent_file(agent_dir, "before")
+    checkpoint.create_checkpoint(str(agent_dir), "before Workday redirect")
+    baseline = agent_dir / ".baseline"
+    baseline.mkdir()
+    (baseline / "topic.yml").write_text("baseline", encoding="utf-8")
+    checkpoint_count = len(list((agent_dir / ".checkpoints").iterdir()))
+
+    with pytest.raises(ValueError, match="protected path"):
+        checkpoint.cmd_revert_reason(
+            str(agent_dir),
+            "before Workday redirect",
+            only=pattern,
+        )
+
+    assert (baseline / "topic.yml").read_text(encoding="utf-8") == "baseline"
+    assert len(list((agent_dir / ".checkpoints").iterdir())) == checkpoint_count
+
+
+def test_create_checkpoint_rejects_reparse_points(
+    tmp_path, monkeypatch
+) -> None:
+    agent_dir = tmp_path / "agent"
+    redirected = agent_dir / "redirected"
+    redirected.mkdir(parents=True)
+    _write_agent_file(agent_dir, "before")
+    original = checkpoint._is_reparse_point
+    monkeypatch.setattr(
+        checkpoint,
+        "_is_reparse_point",
+        lambda path: str(path) == str(redirected) or original(path),
+    )
+
+    with pytest.raises(ValueError, match="reparse point"):
+        checkpoint.create_checkpoint(str(agent_dir), "unsafe")
+
+    assert not (agent_dir / ".checkpoints").exists()
+
+
+def test_scoped_restore_rejects_reparse_point_target_parent(
+    tmp_path, monkeypatch
+) -> None:
+    agent_dir = tmp_path / "agent"
+    target_dir = agent_dir / "topics"
+    target_dir.mkdir(parents=True)
+    target = target_dir / "topic.yml"
+    target.write_text("before", encoding="utf-8")
+    checkpoint.create_checkpoint(str(agent_dir), "before Workday redirect")
+    target.write_text("edited", encoding="utf-8")
+    checkpoint_count = len(list((agent_dir / ".checkpoints").iterdir()))
+    original = checkpoint._is_reparse_point
+    monkeypatch.setattr(
+        checkpoint,
+        "_is_reparse_point",
+        lambda path: str(path) == str(target_dir) or original(path),
+    )
+
+    with pytest.raises(ValueError, match="reparse point"):
+        checkpoint.cmd_revert_reason(
+            str(agent_dir),
+            "before Workday redirect",
+            only="topics/topic.yml",
+        )
+
+    assert target.read_text(encoding="utf-8") == "edited"
+    assert len(list((agent_dir / ".checkpoints").iterdir())) == checkpoint_count
+
+
 def test_main_reports_scoped_restore_error_without_traceback(
     tmp_path, monkeypatch, capsys
 ) -> None:

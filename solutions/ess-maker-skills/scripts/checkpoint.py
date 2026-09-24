@@ -58,6 +58,7 @@ def next_checkpoint_number(checkpoints_dir):
 
 def copy_working_files(agent_dir, dest_dir):
     """Copy all working files (excluding .baseline/ and .checkpoints/)."""
+    _reject_reparse_points(agent_dir)
     if os.path.exists(dest_dir):
         shutil.rmtree(dest_dir)
 
@@ -68,6 +69,58 @@ def copy_working_files(agent_dir, dest_dir):
         return set()
 
     shutil.copytree(agent_dir, dest_dir, ignore=_ignore)
+
+
+def _is_reparse_point(path):
+    """Return whether path redirects filesystem access outside its parent."""
+    if os.path.islink(path):
+        return True
+    isjunction = getattr(os.path, "isjunction", None)
+    return bool(isjunction and isjunction(path))
+
+
+def _reject_reparse_points(root):
+    """Reject symlinks/junctions so checkpoint copies never dereference them."""
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames + filenames:
+            path = os.path.join(directory, name)
+            if _is_reparse_point(path):
+                relative = os.path.relpath(path, root)
+                raise ValueError(
+                    f"Checkpoint path is a reparse point: {relative}"
+                )
+
+
+def _is_protected_relative_path(relative_path):
+    normalized = os.path.normpath(relative_path)
+    if normalized in ("", "."):
+        return True
+    first_part = normalized.split(os.sep, 1)[0]
+    return first_part in EXCLUDE_DIRS
+
+
+def _require_physical_containment(root, path, *, label):
+    """Require path and its existing parents to resolve beneath root."""
+    resolved_root = os.path.realpath(root)
+    resolved_path = os.path.realpath(path)
+    try:
+        contained = os.path.commonpath(
+            [resolved_root, resolved_path]
+        ) == resolved_root
+    except ValueError:
+        contained = False
+    if not contained:
+        raise ValueError(f"{label} resolves outside its root: {path}")
+
+    current = os.path.abspath(path)
+    root_abs = os.path.abspath(root)
+    while current != root_abs:
+        if os.path.lexists(current) and _is_reparse_point(current):
+            raise ValueError(f"{label} traverses a reparse point: {path}")
+        parent = os.path.dirname(current)
+        if parent == current:
+            raise ValueError(f"{label} escapes its root: {path}")
+        current = parent
 
 
 def restore_from(agent_dir, source_dir):
@@ -114,6 +167,12 @@ def restore_matching(agent_dir, source_dir, pattern):
     for relative_path in relative_paths:
         source_path = os.path.abspath(os.path.join(source_root, relative_path))
         target_path = os.path.abspath(os.path.join(agent_root, relative_path))
+        _require_physical_containment(
+            source_root, source_path, label="Checkpoint path"
+        )
+        _require_physical_containment(
+            agent_root, target_path, label="Agent path"
+        )
 
         if os.path.isdir(target_path):
             shutil.rmtree(target_path)
@@ -138,15 +197,29 @@ def _matching_restore_paths(agent_dir, source_dir, pattern):
         raise ValueError(f"Restore pattern escapes checkpoint: {pattern}")
     if os.path.commonpath([agent_root, agent_pattern]) != agent_root:
         raise ValueError(f"Restore pattern escapes agent folder: {pattern}")
+    if source_pattern == source_root or agent_pattern == agent_root:
+        raise ValueError(f"Restore pattern matches agent root: {pattern}")
 
-    source_matches = {
-        os.path.relpath(path, source_root)
-        for path in glob(source_pattern, recursive=True)
-    }
-    current_matches = {
-        os.path.relpath(path, agent_root)
-        for path in glob(agent_pattern, recursive=True)
-    }
+    source_matches = set()
+    current_matches = set()
+    for path in glob(source_pattern, recursive=True):
+        relative = os.path.relpath(path, source_root)
+        if _is_protected_relative_path(relative):
+            raise ValueError(
+                f"Restore pattern matches protected path: {pattern}"
+            )
+        _require_physical_containment(
+            source_root, path, label="Checkpoint path"
+        )
+        source_matches.add(relative)
+    for path in glob(agent_pattern, recursive=True):
+        relative = os.path.relpath(path, agent_root)
+        if _is_protected_relative_path(relative):
+            raise ValueError(
+                f"Restore pattern matches protected path: {pattern}"
+            )
+        _require_physical_containment(agent_root, path, label="Agent path")
+        current_matches.add(relative)
     if not source_matches and not current_matches:
         raise ValueError(f'Restore pattern matched no paths: "{pattern}"')
 
