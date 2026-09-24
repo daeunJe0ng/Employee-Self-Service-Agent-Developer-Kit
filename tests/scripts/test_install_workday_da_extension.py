@@ -43,7 +43,7 @@ def test_parse_profiles_reads_cloud_and_active_marker():
     ]
 
 
-def test_runtime_install_uses_public_pac_profile_and_application():
+def test_runtime_install_uses_preprod_pac_profile_and_application():
     import install_workday_da_extension as m
 
     calls = []
@@ -53,7 +53,7 @@ def test_runtime_install_uses_public_pac_profile_and_application():
         if command[1:3] == ["auth", "list"]:
             return _result(
                 stdout=(
-                    "[1] * user@contoso.com Public "
+                    "[1] * user@contoso.com Preprod "
                     "https://org.crm10.dynamics.com\n"
                 )
             )
@@ -102,7 +102,7 @@ def test_preprod_auth_uses_environment_anchor_when_profile_is_missing():
         "auth",
         "create",
         "--cloud",
-        "Public",
+        "Preprod",
         "--environment",
         "https://org.crm10.dynamics.com",
         "--deviceCode",
@@ -119,7 +119,7 @@ def test_preprod_auth_ignores_active_profile_for_another_environment():
         if command[1:3] == ["auth", "list"]:
             return _result(
                 stdout=(
-                    "[1] * user@contoso.com Public "
+                    "[1] * user@contoso.com Preprod "
                     "https://other.crm10.dynamics.com\n"
                 )
             )
@@ -137,9 +137,9 @@ def test_preprod_auth_ignores_active_profile_for_another_environment():
         "auth",
         "create",
         "--cloud",
-        "Public",
+        "Preprod",
         "--environment",
-        "https://target.crm10.dynamics.com",
+        "https://target.crm10.dynamics.com/",
         "--deviceCode",
     ]
 
@@ -154,9 +154,9 @@ def test_preprod_auth_selects_exact_environment_profile():
         if command[1:3] == ["auth", "list"]:
             return _result(
                 stdout=(
-                    "[1] user@contoso.com Public "
+                    "[1] user@contoso.com Preprod "
                     "https://other.crm10.dynamics.com\n"
-                    "[2] user@contoso.com Public "
+                    "[2] user@contoso.com Preprod "
                     "https://target.crm10.dynamics.com/\n"
                 )
             )
@@ -178,41 +178,7 @@ def test_preprod_auth_selects_exact_environment_profile():
     ]
 
 
-def test_prod_auth_selects_only_exact_environment_profile():
-    import install_workday_da_extension as m
-
-    calls = []
-
-    def runner(command, *, capture_output, timeout):
-        calls.append([str(part) for part in command])
-        if command[1:3] == ["auth", "list"]:
-            return _result(
-                stdout=(
-                    "[1] * user@contoso.com Public "
-                    "https://other.crm.dynamics.com\n"
-                    "[2] user@contoso.com Public "
-                    "https://target.crm.dynamics.com/\n"
-                )
-            )
-        return _result()
-
-    m.ensure_pac_auth(
-        Path("pac.exe"),
-        ring="prod",
-        environment_url="https://target.crm.dynamics.com",
-        runner=runner,
-    )
-
-    assert calls[-1] == [
-        "pac.exe",
-        "auth",
-        "select",
-        "--index",
-        "2",
-    ]
-
-
-def test_prod_ignores_profile_without_requested_environment():
+def test_selects_single_inactive_profile_for_requested_ring():
     import install_workday_da_extension as m
 
     calls = []
@@ -233,12 +199,9 @@ def test_prod_ignores_profile_without_requested_environment():
     assert calls[-1] == [
         "pac.exe",
         "auth",
-        "create",
-        "--cloud",
-        "Public",
-        "--environment",
-        "https://org.crm.dynamics.com",
-        "--deviceCode",
+        "select",
+        "--index",
+        "4",
     ]
 
 
@@ -253,8 +216,8 @@ def test_preprod_auth_creates_anchored_profile_when_existing_profiles_lack_urls(
             return _result()
         return _result(
             stdout=(
-                "[1] user1@contoso.com Public\n"
-                "[2] user2@contoso.com Public\n"
+                "[1] user1@contoso.com Preprod\n"
+                "[2] user2@contoso.com Preprod\n"
             )
         )
 
@@ -270,7 +233,7 @@ def test_preprod_auth_creates_anchored_profile_when_existing_profiles_lack_urls(
         "auth",
         "create",
         "--cloud",
-        "Public",
+        "Preprod",
         "--environment",
         "https://org.crm10.dynamics.com",
         "--deviceCode",
@@ -283,9 +246,9 @@ def test_rejects_multiple_profiles_for_exact_preprod_environment():
     def runner(command, *, capture_output, timeout):
         return _result(
             stdout=(
-                "[1] user1@contoso.com Public "
+                "[1] user1@contoso.com Preprod "
                 "https://org.crm10.dynamics.com\n"
-                "[2] user2@contoso.com Public "
+                "[2] user2@contoso.com Preprod "
                 "https://org.crm10.dynamics.com/\n"
             )
         )
@@ -307,12 +270,7 @@ def test_legacy_da_uses_targeted_appsource_application():
     def runner(command, *, capture_output, timeout):
         calls.append([str(part) for part in command])
         if command[1:3] == ["auth", "list"]:
-            return _result(
-                stdout=(
-                    "[1] * user@contoso.com Public "
-                    "https://org.crm.dynamics.com\n"
-                )
-            )
+            return _result(stdout="[1] * user@contoso.com Public\n")
         return _result()
 
     schema = m.install_workday_package(
@@ -332,12 +290,7 @@ def test_surfaces_pac_install_failure():
 
     def runner(command, *, capture_output, timeout):
         if command[1:3] == ["auth", "list"]:
-            return _result(
-                stdout=(
-                    "[1] * user@contoso.com Public "
-                    "https://org.crm.dynamics.com\n"
-                )
-            )
+            return _result(stdout="[1] * user@contoso.com Public\n")
         return _result(returncode=1)
 
     with pytest.raises(m.PacCliError, match="could not install"):
