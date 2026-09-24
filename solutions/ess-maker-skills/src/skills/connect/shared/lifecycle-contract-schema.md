@@ -23,6 +23,7 @@ reads a contract, runs the checkpoints it names, and renders results.
 | `provider` | string | yes | Short key, lower-case, no spaces (e.g. `"workday"`). Must match the folder name under `src/skills/connect/{provider}/` and the state folder under `.local/connect/{provider}/`. |
 | `displayName` | string | yes | Human name shown to the user (e.g. `"Workday"`). |
 | `detect` | object | yes | How the runner's caller decides this lifecycle applies at all — see "Detect block" below. |
+| `connectConfig` | string | no | Provider-specific config JSON to pass to FlightCheck as `--connect-config`. Use this when provider state intentionally lives outside `.local/config.json`; the explicit file prevents architecture-specific state from being guessed or merged. |
 | `phases` | array | yes | Ordered list of phase objects — see "Phase fields" below. Executed strictly in array order; a phase never starts until every phase before it is `done` (or `skipped`, see below). |
 
 ### Detect block
@@ -49,7 +50,6 @@ reads a contract, runs the checkpoints it names, and renders results.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `connectConfig` | string | no | Provider-specific config JSON to pass to FlightCheck as `--connect-config`. Use this when provider state intentionally lives outside `.local/config.json`; the explicit file prevents architecture-specific state from being guessed or merged. |
 | `id` | string | yes | Stable, internal only — never shown to the user. |
 | `label` | string | yes | Plain-language description shown in the up-front plan and the resume checklist (e.g. `"Confirm the Workday extension and its connections are healthy"`). No internal IDs, checkpoint names, or file paths. |
 | `checkpoints` | array of strings | yes | One or more FlightCheck checkpoint IDs (or family wildcards, e.g. `"WD-FLOW-*"`) that gate this phase. The phase is `done` only when every listed checkpoint returns a status allowed by `completionStatuses`. |

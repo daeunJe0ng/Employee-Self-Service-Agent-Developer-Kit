@@ -1,10 +1,10 @@
 # Connect Workday (already installed)
 
 Entry point for connecting this agent to a Workday extension that is
-**already installed** somewhere in this environment. If no Workday extension
-exists yet, the caller (`src/skills/connect/step1.md`) routes to the setup
-orchestrator (`src/skills/setup/SKILL.md`) instead — this file is never
-reached in that case.
+**already installed** in this environment and was identified by the caller as
+the compatible simplified CEA package. Missing, partial, legacy, or
+inconclusive package results stop in `src/skills/connect/step1.md`; this skill
+does not fall back to the setup orchestrator.
 
 Every **Message** block is the exact text to show the user. Copy it verbatim.
 Do not rephrase, add commentary, or tell the user what tools you are calling.

@@ -42,6 +42,11 @@ def test_lifecycle_runner_requires_reverification_and_rollback() -> None:
     assert "permission-gate.md" in runner
     assert "--revert-reason" in runner
     assert "rollbackPushGlob" in runner
+    assert 'ACTION_RESULT = "applied"' not in runner
+    assert '**`"applied"`**' in runner
+    assert '**`"cancelled"`**' in runner
+    assert "actual current status values" in runner
+    assert "provider plan passed" not in runner
 
 
 def test_cea_workday_routing_is_package_gated() -> None:
@@ -52,6 +57,18 @@ def test_cea_workday_routing_is_package_gated() -> None:
     assert "Passed` + full / legacy result" in route
     assert "Never start a lifecycle from an\n  inconclusive package check" in route
     assert "connect/workday/SKILL.md" in route
+    assert "Shared provider setup state is not agent connection state" in route
+
+
+def test_workday_wiring_uses_installed_identity_and_explicit_result() -> None:
+    action = (
+        _CONNECT / "workday" / "actions" / "wire-user-context-redirect.md"
+    ).read_text(encoding="utf-8")
+
+    assert ".local/agents/{AGENT_SLUG}/topics/" in action
+    assert "workspace/agents/{AGENT_SLUG}/topics/" in action
+    assert 'ACTION_RESULT = "cancelled"' in action
+    assert 'ACTION_RESULT = "applied"' in action
 
 
 def test_declarative_agents_do_not_enter_cea_lifecycle() -> None:

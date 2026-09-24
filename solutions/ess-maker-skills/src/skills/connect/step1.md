@@ -11,11 +11,11 @@ Build a list of connected integrations (if any):
 
 - **ServiceNow** — connected if `.local/connect/servicenow/steps.md` exists and
   all items are checked.
-- **Workday** — connected if either:
-  - `.local/connect/workday/config.json` exists and its `setupStatus` shows
-    every setup row (`S1.1` … `S6.2`) in state `done`, or
-  - `.local/connect/workday/agents/{active-agent-slug}/lifecycle.json` exists
-    and every phase is `done`.
+- **Workday** — connected only if
+  `.local/connect/workday/agents/{active-agent-slug}/lifecycle.json` exists,
+  its `agentSlug` exactly matches the active agent, and every phase is `done`.
+  Shared provider setup state is not agent connection state and must not make
+  a sibling or newly selected agent appear connected.
 
 ---
 

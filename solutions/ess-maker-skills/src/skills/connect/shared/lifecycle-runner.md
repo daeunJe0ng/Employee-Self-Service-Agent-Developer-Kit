@@ -172,8 +172,17 @@ python scripts/checkpoint.py "{rollbackLabel}"
 ```
 
 Then read the phase's `actionDoc` file and follow it completely — it contains
-its own Message blocks and tool calls. When it finishes, set
-`phases.{id}.actionApplied = true` and write the state file immediately.
+its own Message blocks and tool calls and must return an explicit
+`ACTION_RESULT`:
+
+- **`"applied"`** — the mutation was observed to complete successfully. Set
+  `phases.{id}.actionApplied = true` and write the state file immediately.
+- **`"cancelled"`** — the user declined before mutation. Keep
+  `actionApplied = false`, leave the phase `in-progress`, write the state
+  file, and stop. Do not run the phase checkpoints.
+
+Any missing, unknown, or failure result is not success: keep
+`actionApplied = false`, report the action failure, and stop.
 
 ### L.4b — Run the phase's checkpoints
 
@@ -248,7 +257,11 @@ Once every phase is `done`:
 **Message:**
 
 {displayName} is connected to this agent. Every required validation phase in
-the provider plan passed.
+the provider plan completed.
+
+Validation results: {checkpoint IDs and their actual current status values,
+grouped by phase; preserve Manual, Warning, Skipped, and NotConfigured rather
+than describing them as Passed}.
 
 **End message.**
 

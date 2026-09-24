@@ -33,9 +33,11 @@ available yet."
 ## A.2 — Resolve the installed system topic
 
 Find the installed Workday "Set User Context" system topic's dialog id under
-`workspace/agents/{AGENT_SLUG}/topics/`. Use the actual installed topic name — do not
-assume a fixed name, since it varies by install path (for example,
-`WorkdaySystemGetUserContextV2` on the current extension pack).
+`.local/agents/{AGENT_SLUG}/topics/`. Use the actual installed topic's
+`schemaName` — do not assume a fixed name, since it varies by install path
+(for example, `WorkdaySystemGetUserContextV2` on the current extension pack).
+This installed tree is read-only package evidence. The editable redirect
+remains in `workspace/agents/{AGENT_SLUG}/topics/`.
 
 ---
 
@@ -90,8 +92,9 @@ Use the `vscode_askQuestions` tool:
 ]
 ```
 
-If the user selects **Not now**, stop without pushing and leave the phase
-`in-progress`. If the user selects **Publish**, run:
+If the user selects **Not now**, set `ACTION_RESULT = "cancelled"`, return to
+the lifecycle runner without pushing, and leave the phase `in-progress`. If
+the user selects **Publish**, run:
 
 ```
 python scripts/push.py --only "topics/user-context-setup.mcs.yml" --yes
@@ -99,11 +102,14 @@ python scripts/push.py --only "topics/user-context-setup.mcs.yml" --yes
 
 The explicit question above is the approval for this concrete scoped change;
 `--yes` prevents the script from attempting a second terminal-only prompt.
+Only when that command exits successfully, set `ACTION_RESULT = "applied"`.
+If it fails, stop and report the failure; do not return an applied result.
 
 ---
 
 ## A.5 — Return
 
-Return to the lifecycle runner. It re-runs `WD-REST-002` for `AGENT_SLUG`
-immediately after this file completes and decides whether to advance or use
-the named restore point — this file does not re-run the checkpoint itself.
+Return `ACTION_RESULT` to the lifecycle runner. It re-runs `WD-REST-002` for
+`AGENT_SLUG` only after an `"applied"` result and decides whether to advance
+or use the named restore point — this file does not re-run the checkpoint
+itself.
