@@ -282,6 +282,88 @@ class TestPackageFlavorDetection:
         assert r.status == "Passed"
         assert runner._workday_package_flavor == "simplified"
 
+    @responses.activate
+    def test_simplified_install_with_agent_ref_stays_simplified(
+        self, runner: _MinimalRunner, fake_dataverse_url: str
+    ) -> None:
+        """A Declarative Agent install adds a per-agent Workday connection
+        reference (`{schema}.{guid}.shared_workdaysoap`) alongside the
+        Microsoft-shipped solution ref. That agent ref carries no `_<5hex>`
+        role suffix, so before AB#7852495 it landed in
+        `unknown_format_names` and forced a valid simplified install to
+        misclassify as "unknown" (WARNING), un-gating every downstream
+        ISU/RaaS check. It must be excluded from the fingerprint."""
+        from flightcheck.checks.workday import _check_package_flavor
+
+        _register_connection_refs(
+            base_url=fake_dataverse_url,
+            refs=[
+                _non_workday_ref(),
+                *dv.workday_connection_refs_simplified(),
+                dv.workday_agent_scoped_connection_ref(),
+            ],
+        )
+
+        runner._workday_flows = [{"name": "Workday-WhateverFlow"}]
+        results = _check_package_flavor(runner, wd_flows=runner._workday_flows)
+
+        r = _result_by_id(results, "WD-PKG-001")
+        assert r.status == "Passed"
+        assert runner._workday_package_flavor == "simplified"
+        assert "simplified-install shape" in r.result
+        # The agent ref is still a Workday-SOAP row, so it remains in the
+        # cache WD-CONN-012 reads (2 rows), but it did NOT force "unknown".
+        assert len(runner._workday_connection_refs) == 2
+
+    @responses.activate
+    def test_full_install_with_agent_ref_stays_full(
+        self, runner: _MinimalRunner, fake_dataverse_url: str
+    ) -> None:
+        """Same agent-ref exclusion for a full / legacy 3-ref install."""
+        from flightcheck.checks.workday import _check_package_flavor
+
+        _register_connection_refs(
+            base_url=fake_dataverse_url,
+            refs=[
+                *dv.workday_connection_refs_full(),
+                dv.workday_agent_scoped_connection_ref(),
+            ],
+        )
+
+        runner._workday_flows = [{"name": "Workday-WhateverFlow"}]
+        results = _check_package_flavor(runner, wd_flows=runner._workday_flows)
+
+        r = _result_by_id(results, "WD-PKG-001")
+        assert r.status == "Passed"
+        assert runner._workday_package_flavor == "full"
+        assert "full / legacy" in r.result
+
+    @responses.activate
+    def test_only_agent_ref_is_unknown_with_agent_scoped_diagnostic(
+        self, runner: _MinimalRunner, fake_dataverse_url: str
+    ) -> None:
+        """Degenerate case: the ONLY Workday-SOAP row is a per-agent ref and
+        no Microsoft solution ref is present. There is nothing to fingerprint,
+        so the verdict is still WARNING/"unknown" — but the operator must be
+        told agent-scoped refs were seen and excluded, not left with an empty
+        diagnostic."""
+        from flightcheck.checks.workday import _check_package_flavor
+
+        _register_connection_refs(
+            base_url=fake_dataverse_url,
+            refs=[
+                _non_workday_ref(),
+                dv.workday_agent_scoped_connection_ref(),
+            ],
+        )
+
+        results = _check_package_flavor(runner, wd_flows=[])
+
+        r = _result_by_id(results, "WD-PKG-001")
+        assert r.status == "Warning"
+        assert runner._workday_package_flavor == "unknown"
+        assert "per-agent Declarative Agent connection references" in r.result
+
     def test_no_dv_token_returns_skipped(self, fake_dataverse_url: str) -> None:
         from flightcheck.checks.workday import _check_package_flavor
 

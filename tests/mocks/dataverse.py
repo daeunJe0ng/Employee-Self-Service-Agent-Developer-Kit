@@ -263,6 +263,38 @@ def workday_connection_refs_runtime() -> list[dict[str, Any]]:
     ]
 
 
+def workday_agent_scoped_connection_ref(
+    *,
+    schema_prefix: str = "msdyn_copilotforemployeeselfservicedahr",
+    guid: str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+    display_name: str = "Workday (agent connection)",
+    connection_id: str | None = "shared-workdaysoap-agent-0000-0000-000000002222",
+    statuscode: int = 1,
+    ref_id: str | None = "00000000-0000-0000-0000-000000008801",
+) -> dict[str, Any]:
+    """Build a per-agent Declarative Agent Workday connection reference.
+
+    Declarative Agent connection references use a `{schema}.{guid}.{connector}`
+    logical name (matched by `_AGENT_CONNECTION_REF_RE` in workday.py) and bind
+    the same `shared_workdaysoap` connector as the Microsoft-shipped solution
+    refs — but they carry no `_<5hex>` role fingerprint suffix. WD-PKG-001 must
+    exclude them from install-flavor detection (AB#7852495) so a valid
+    Declarative Agent install is not misclassified as "unknown".
+
+    Same Dataverse `connectionreferences` GET endpoint/shape as
+    `connection_ref` (only the logical-name value differs), so it is covered by
+    the existing connectionreferences cassette — no new capture needed.
+    """
+    return connection_ref(
+        ref_id=ref_id,
+        logical_name=f"{schema_prefix}.{guid}.shared_workdaysoap",
+        display_name=display_name,
+        connector_id=WORKDAY_SOAP_CONNECTOR_ID,
+        connection_id=connection_id,
+        statuscode=statuscode,
+    )
+
+
 def collection(
     records: Iterable[Mapping[str, Any]],
     *,

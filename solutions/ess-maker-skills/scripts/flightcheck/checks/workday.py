@@ -1188,8 +1188,20 @@ def _check_package_flavor(runner, *, wd_flows: list) -> list[CheckResult]:
     runtime_refs: list[dict] = []
     unknown_format_names: list[str] = []
     unknown_suffixes: set[str] = set()
+    agent_scoped_refs: list[dict] = []
     for r in workday_refs:
         logical = r.get("connectionreferencelogicalname")
+        # Per-agent Declarative Agent connection references have a
+        # `{schema}.{guid}.{connector}` logical name and bind the same
+        # shared_workdaysoap connector, but they are NOT the Microsoft-shipped
+        # solution refs whose stable `_<5hex>` role suffix defines the install
+        # flavor. Including them would land them in `unknown_format_names`
+        # (their name has no role suffix), forcing a valid Declarative Agent
+        # install to misclassify as "unknown" and un-gating every ISU/RaaS
+        # consumer check. Exclude them from the fingerprint. (AB#7852495)
+        if _AGENT_CONNECTION_REF_RE.search(str(logical or "")):
+            agent_scoped_refs.append(r)
+            continue
         if (
             str(logical or "").casefold()
             == WORKDAY_RUNTIME_REF_LOGICAL_NAME.casefold()
@@ -1343,6 +1355,11 @@ def _check_package_flavor(runner, *, wd_flows: list) -> list[CheckResult]:
         diagnostics.append(
             "rows with unexpected logical-name format: "
             + ", ".join(sorted(unknown_format_names))
+        )
+    if agent_scoped_refs:
+        diagnostics.append(
+            f"per-agent Declarative Agent connection references "
+            f"(excluded from fingerprint): {len(agent_scoped_refs)}"
         )
     results.append(CheckResult(roles=[Role.POWER_PLATFORM_ADMIN.value],
         checkpoint_id="WD-PKG-001", category="Workday",
