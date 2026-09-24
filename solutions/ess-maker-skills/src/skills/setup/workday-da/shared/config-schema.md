@@ -78,8 +78,26 @@ same data.
 ```json
 {
   "setupStatus": {
-    "DA1.1": { "state": "done", "checkpoint": "WD-DA-PKG-001", "gate": "prog", "verifiedBy": "programmatic" },
-    "DA2.1": { "state": "pending", "checkpoint": "WD-CONN-102", "gate": "attest", "verifiedBy": null }
+    "DA1.1": {
+      "state": "done",
+      "checkpoint": "WD-DA-PKG-001",
+      "gate": "prog",
+      "verifiedBy": "programmatic",
+      "evidence": {
+        "outcome": "PASSED",
+        "provenance": "flightcheck",
+        "note": "Required package detected",
+        "capturedAt": "2026-09-24T10:00:00Z"
+      },
+      "gateEvidence": {
+        "method": "programmatic",
+        "outcome": "pass",
+        "provenance": "role-query",
+        "note": "Required role confirmed",
+        "capturedAt": "2026-09-24T09:59:00Z"
+      }
+    },
+    "DA2.1": { "state": "pending", "checkpoint": "WD-CONN-102", "gate": "manual", "verifiedBy": null }
   }
 }
 ```
@@ -93,6 +111,13 @@ same data.
   (see `shared/checklist-updater.md` and `shared/permission-gate.md`, reused
   unchanged from CEA). An `advisory` row (no checkpoint) completes with
   `verifiedBy: "reviewed"` once its report has been shown; it never blocks.
+- `evidence` is a structured completion record with `outcome`, `provenance`,
+  `note`, and `capturedAt`. It records why the row reached its current state;
+  it never replaces scalar `verifiedBy`.
+- `gateEvidence` is the optional role-gate record with `method`
+  (`programmatic` or `attested`), `outcome` (`pass` or `stop`), `provenance`
+  (`role-query` or `user-attestation`), `note`, and `capturedAt`. Gate evidence
+  proves authorization only; it does not by itself complete the row.
 
 ---
 
@@ -130,7 +155,18 @@ evidence from the checked-in authorization script.
   "oauthClientId": "WORKDAY_CLIENT_ID",
   "status": "in-progress",
   "setupStatus": {
-    "DA1.1": { "state": "done", "checkpoint": "WD-DA-PKG-001", "gate": "prog", "verifiedBy": "programmatic" }
+    "DA1.1": {
+      "state": "done",
+      "checkpoint": "WD-DA-PKG-001",
+      "gate": "prog",
+      "verifiedBy": "programmatic",
+      "evidence": {
+        "outcome": "PASSED",
+        "provenance": "flightcheck",
+        "note": "Required package detected",
+        "capturedAt": "2026-09-24T10:00:00Z"
+      }
+    }
   }
 }
 ```

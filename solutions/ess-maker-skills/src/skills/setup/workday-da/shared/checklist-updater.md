@@ -20,7 +20,8 @@ not narrate tool calls.
   it owns.
 - `NEW_STATE` — `"in-progress"` \| `"done"` \| `"blocked"`.
 - `CHECKPOINT_RESULT` — the flightcheck result for the row's checkpoint, one of
-  `PASSED` \| `FAILED` \| `WARNING` \| `MANUAL` \| `null` (null = not run yet).
+  `PASSED` \| `FAILED` \| `ERROR` \| `WARNING` \| `MANUAL` \|
+  `NOT_CONFIGURED` \| `SKIPPED` \| `null` (null = not run yet).
 - `GATE` — the row's gate type: `"prog"` \| `"manual"` \| `"attest"` \|
   `"advisory"` (from the DA master checklist row; also recorded in config per
   `config-schema.md`).
@@ -32,6 +33,13 @@ not narrate tool calls.
 - `EXTERNAL_EVIDENCE` — required when `RESULT_SOURCE="external"`; a safe
   summary proving the operation's target, outcome, and verification. Never
   include credentials, tokens, or raw sensitive output.
+- `GATE_EVIDENCE` — optional structured evidence returned by
+  `permission-gate.md`. Preserve it under the row's `gateEvidence` field; do
+  not store the object in scalar `verifiedBy`.
+- `ROW_EVIDENCE` — required before a `manual`/`attest` row can complete. It is
+  a safe object with `outcome`, `provenance`, `note`, and `capturedAt`;
+  `provenance` identifies the source such as `flightcheck`,
+  `user-acknowledgement`, or `external-operation`.
 
 **Outputs:**
 - The matching checklist item in `.local/setup/workday-da/tasks.md` is updated
@@ -181,15 +189,19 @@ absent). Find the checklist item whose hidden comment has `id:` equal to
 This is the load-bearing rule. **A `MANUAL` or attestation-gated row is never
 auto-completed by a flightcheck pass.**
 
-Decide `Status` as follows:
+First apply failure precedence: for every non-advisory row,
+`CHECKPOINT_RESULT = FAILED` or `ERROR` always produces `blocked`, regardless
+of `ACK`, `NEW_STATE`, or gate evidence. An acknowledgement records that a
+person saw or performed a step; it never overrides an objective failure.
+
+Otherwise decide `Status` as follows:
 
 | `GATE` | Condition | Resulting `Status` |
 |--------|-----------|--------------------|
 | `prog` | `CHECKPOINT_RESULT` = `PASSED` | `done` |
-| `prog` | `CHECKPOINT_RESULT` = `FAILED` | `blocked` |
-| `prog` | `CHECKPOINT_RESULT` = `WARNING` / `SKIPPED` / `null` | `in-progress` |
-| `manual` / `attest` | `ACK` = `true` (user acknowledged **and** evidence captured) | `done` |
-| `manual` / `attest` | `ACK` = `false`, regardless of `CHECKPOINT_RESULT` | `in-progress` (or `blocked` if `FAILED`) |
+| `prog` | `CHECKPOINT_RESULT` = `WARNING` / `NOT_CONFIGURED` / `SKIPPED` / `MANUAL` / `null` | `in-progress` |
+| `manual` / `attest` | `ACK` = `true`, `ROW_EVIDENCE` is complete, and result is not `FAILED`/`ERROR` | `done` |
+| `manual` / `attest` | `ACK` = `false` or `ROW_EVIDENCE` is missing | `in-progress` |
 | `advisory` | the advisory step has been run and its report shown (or attempted and skipped) | `done` |
 
 Notes:
@@ -258,11 +270,36 @@ lost — the orchestrator resumes from the first non-`done` row in `setupStatus`
          "state": "<resulting status>",
          "checkpoint": "<the item's checkpoint ID>",
          "gate": "<prog|manual|attest|advisory>",
-         "verifiedBy": "<programmatic|attested|null>"
+         "verifiedBy": "<programmatic|attested|reviewed|null>",
+         "evidence": {
+           "outcome": "<checkpoint status or operation outcome>",
+           "provenance": "<flightcheck|user-acknowledgement|external-operation|advisory>",
+           "note": "<safe evidence summary>",
+           "capturedAt": "<UTC timestamp>"
+         },
+         "gateEvidence": {
+           "method": "<programmatic|attested>",
+           "outcome": "<pass|stop>",
+           "provenance": "<role-query|user-attestation>",
+           "note": "<safe role evidence summary>",
+           "capturedAt": "<UTC timestamp>"
+         }
        }
      }
    }
    ```
+   Set scalar `verifiedBy` from the resulting completed state:
+   - `programmatic` for a completed `prog` row,
+   - `attested` for a completed `manual`/`attest` row,
+   - `reviewed` for a completed `advisory` row,
+   - `null` for any row that is not `done`.
+
+   Persist `ROW_EVIDENCE` as `evidence` and `GATE_EVIDENCE` as
+   `gateEvidence` when supplied. Merge these fields with the existing row;
+   never replace `verifiedBy` with an object. When a row regresses to
+   `in-progress` or `blocked`, clear stale completion `verifiedBy` and
+   `evidence`, while retaining current failure evidence and any still-valid
+   `gateEvidence`.
    Merge — do not drop other `setupStatus` keys (round-trip contract in
    `config-schema.md`).
 

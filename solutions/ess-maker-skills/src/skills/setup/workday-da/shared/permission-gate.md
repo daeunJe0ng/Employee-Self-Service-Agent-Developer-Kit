@@ -23,11 +23,15 @@ Do not rephrase, add commentary, or tell the user what tools you are calling.
 **Outputs to the calling file:**
 - `GATE_RESULT` — `"pass"` or `"stop"`. On `"stop"`, the calling file must halt.
 - `GATE_EVIDENCE` — an object recording how the gate was satisfied; the caller
-  persists it under `setupStatus["{STEP_ID}"].verifiedBy` in
+  passes it to `checklist-updater.md`, which merges it under
+  `setupStatus["{STEP_ID}"].gateEvidence` in
   `.local/connect/workday-da/config.json` (see `config-schema.md`):
-  - `verifiedBy` ∈ `"programmatic"` \| `"attested"`.
+  - `method` ∈ `"programmatic"` \| `"attested"`.
+  - `outcome` ∈ `"pass"` \| `"stop"`.
+  - `provenance` ∈ `"role-query"` \| `"user-attestation"`.
   - `note` — short free text (e.g. the role-query result, or the user's
     attestation timestamp/identity).
+  - `capturedAt` — current UTC timestamp.
 
 ---
 
@@ -70,7 +74,7 @@ Run the `ROLE_QUERY` the calling file supplied. Examples of what a caller passes
 
 **If the query proves the role is held:**
 - Set `GATE_RESULT = "pass"`.
-- Set `GATE_EVIDENCE = { "verifiedBy": "programmatic", "note": "<matched role/query result>" }`.
+- Set `GATE_EVIDENCE = { "method": "programmatic", "outcome": "pass", "provenance": "role-query", "note": "<matched role/query result>", "capturedAt": "<current UTC timestamp>" }`.
 - Return to the calling file.
 
 **If the query proves the role is NOT held** (or returns an
@@ -99,7 +103,9 @@ step. Sign in again or ask a verified administrator to run it, then retry.
 **End message.**
 
 - Set `GATE_RESULT = "stop"`.
-- Record the query error in `GATE_EVIDENCE.note`.
+- Set `GATE_EVIDENCE` with `method: "programmatic"`, `outcome: "stop"`,
+  `provenance: "role-query"`, the query error in `note`, and the current UTC
+  timestamp in `capturedAt`.
 - Return to the calling file. Never downgrade a programmatic privileged-role
   gate to self-attestation.
 
@@ -136,7 +142,7 @@ Use the `vscode_askQuestions` tool:
 
 **If the user chose "Yes, I have this role":**
 - Set `GATE_RESULT = "pass"`.
-- Set `GATE_EVIDENCE = { "verifiedBy": "attested", "note": "user attested {REQUIRED_ROLE} for {STEP_ID}" }`.
+- Set `GATE_EVIDENCE = { "method": "attested", "outcome": "pass", "provenance": "user-attestation", "note": "user attested {REQUIRED_ROLE} for {STEP_ID}", "capturedAt": "<current UTC timestamp>" }`.
 - Return to the calling file.
 
 **If the user chose "No / not sure":**
@@ -149,6 +155,8 @@ that role to run it, then come back and continue.
 **End message.**
 
 - Set `GATE_RESULT = "stop"`.
+- Set `GATE_EVIDENCE` with `method: "attested"`, `outcome: "stop"`,
+  `provenance: "user-attestation"`, a safe note, and the current UTC timestamp.
 - Return to the calling file. **The caller must halt — do not proceed.**
 
 > An attested `"pass"` records that the role was **claimed**, not directory-proven.

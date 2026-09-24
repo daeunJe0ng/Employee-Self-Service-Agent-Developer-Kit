@@ -27,7 +27,7 @@ files you are reading. **Never** show internal variable names or IDs in chat.
 | Step | Checkpoint | Gate |
 |------|-----------|------|
 | DA3.1 | `WD-API-CLIENT-001` — Workday API client registered (SAML ****** grant, functional areas, Include Workday Owned Scope = Yes) | attest |
-| DA3.2 | `WD-TENANT-001` — Tenant Setup – Security + connection fields captured | attest |
+| DA3.2 | `WD-API-CLIENT-001` — Workday connection fields captured with the registered API client | attest |
 | DA3.3 | `WD-TENANT-001` — signed-in employee SAML authentication policy verified | attest |
 | DA3.4 | `WD-CONN-102` *(reuse)* — Workday X.509 signing cert matches the Entra one | manual/attest |
 
@@ -110,7 +110,7 @@ Use the `vscode_askQuestions` tool:
 
 **If the user chose "Yes, I have":**
 - Set `GATE_RESULT = "pass"` and
-  `GATE_EVIDENCE = { "verifiedBy": "attested", "note": "user confirmed a Workday administrator is available to perform DA3.1–DA3.4 with them" }`.
+  `GATE_EVIDENCE = { "method": "attested", "outcome": "pass", "provenance": "user-attestation", "note": "user confirmed a Workday administrator is available to perform DA3.1–DA3.4 with them", "capturedAt": "<current UTC timestamp>" }`.
 - Carry `GATE_EVIDENCE` forward (recorded when the DA3 rows are updated), and
   continue to DA3.0b.
 
@@ -250,7 +250,9 @@ Use the `vscode_askQuestions` tool:
 
 - **"Yes, they match"** → update **DA3.4** via
   [`shared/checklist-updater.md`](shared/checklist-updater.md) with
-  `STEP_ID="DA3.4"`, `GATE="manual"`, `CHECKPOINT_RESULT="MANUAL"`, `ACK=true`.
+  `STEP_ID="DA3.4"`, `GATE="manual"`, `CHECKPOINT_RESULT="MANUAL"`, `ACK=true`,
+  `ROW_EVIDENCE` recording the compared thumbprints and confirmation, and the
+  carried `GATE_EVIDENCE`.
 - **"No / not sure"** → leave DA3.4 `in-progress`; have the user re-upload the
   correct Base64 certificate from Entra and re-check. Do not continue to DA3.0d
   with a mismatched cert.
@@ -341,11 +343,13 @@ to acknowledge the row. Then:
 
 - Confirm the row via [`shared/checklist-updater.md`](shared/checklist-updater.md)
   with `STEP_ID="DA3.1"`, `GATE="attest"`, `CHECKPOINT_RESULT="MANUAL"`,
-  `ACK=true` once the user acknowledges the client is registered correctly.
+  `ACK=true` once the user acknowledges the client is registered correctly,
+  plus `ROW_EVIDENCE` recording the confirmed registration facts and the
+  carried `GATE_EVIDENCE`.
 - Then update **DA3.2** (connection fields captured) via
   [`shared/checklist-updater.md`](shared/checklist-updater.md) with
   `STEP_ID="DA3.2"`, `GATE="attest"`, `CHECKPOINT_RESULT="MANUAL"`, `ACK=true` —
-  using the persisted fields as the captured evidence.
+  using the persisted fields as `ROW_EVIDENCE` and carrying `GATE_EVIDENCE`.
 
 If the user says the client is wrong or fields are missing, leave DA3.1/DA3.2
 `in-progress` and re-capture before continuing.
@@ -434,7 +438,9 @@ result table **and** its full verification steps — **before** you ask the user
 confirm. Then update **DA3.3** via
 [`shared/checklist-updater.md`](shared/checklist-updater.md) with
 `STEP_ID="DA3.3"`, `GATE="attest"`, `CHECKPOINT_RESULT="MANUAL"`, `ACK=true` once
-the user confirms one of the two supported outcomes above.
+the user confirms one of the two supported outcomes above. Pass that selected
+policy/rule and whether it was reused or activated as `ROW_EVIDENCE`, together
+with the carried `GATE_EVIDENCE`.
 
 The **functional** proof of all of this comes downstream, when the Workday
 extension package's Dataverse connection authenticates successfully — not

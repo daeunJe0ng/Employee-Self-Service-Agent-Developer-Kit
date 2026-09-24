@@ -58,6 +58,10 @@ def test_state_contract_requires_immediate_durable_updates() -> None:
     assert ".local/connect/workday-da/config.json" in updater
     assert "Read" in schema and "Merge" in schema and "Write" in schema
     assert "sidecarDataverseEndpoint" in schema
+    assert '"gateEvidence"' in schema
+    assert '"provenance"' in schema
+    assert '`reviewed`' in updater
+    assert "FAILED` or `ERROR` always produces `blocked`" in updater
 
 
 def test_entra_setup_pins_tenant_and_exact_app_identity() -> None:
@@ -91,6 +95,10 @@ def test_workday_tenant_setup_preserves_manual_gates_and_safe_order() -> None:
     assert "Workday cert field is not API-reachable" in tenant
     assert "checkpoints: WD-CONN-102 | gate: manual" in tasks
     assert "checkpoints: WD-API-CLIENT-001 | gate: attest" in tasks
+    assert (
+        "| DA3.2 | `WD-API-CLIENT-001` — Workday connection fields captured"
+        in tenant
+    )
     assert "There is no separate domain-to-integration-security-group" in tenant
     assert "Do not look for an OAuth-client restriction" in tenant
     assert "Existing active policy already allows employee SAML" in tenant

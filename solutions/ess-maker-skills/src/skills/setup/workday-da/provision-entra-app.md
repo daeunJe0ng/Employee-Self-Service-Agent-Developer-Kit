@@ -361,7 +361,8 @@ user, then update **DA2.1** via
 [`shared/checklist-updater.md`](shared/checklist-updater.md) with
 `STEP_ID="DA2.1"`, `GATE="manual"`, `CHECKPOINT_RESULT` = the checkpoint result,
 and `ACK` = the user's explicit confirmation that the certificate was added and
-activated. Persist the DA2.0 `GATE_EVIDENCE`.
+activated. Pass the certificate thumbprint and activation confirmation as
+`ROW_EVIDENCE`, and persist the DA2.0 `GATE_EVIDENCE`.
 
 ---
 
@@ -640,8 +641,9 @@ is saved.
 Then, per [`shared/checklist-updater.md`](shared/checklist-updater.md)'s manual
 rule, ask for an explicit acknowledgement and update **DA2.6** with
 `STEP_ID="DA2.6"`, `GATE="manual"`, `CHECKPOINT_RESULT="MANUAL"`, and `ACK` = the
-user's explicit confirmation. On `ACK=true` the row becomes `done`; a `MANUAL`
-result alone never completes it.
+user's explicit confirmation. Pass the displayed signing-option values and
+confirmation as `ROW_EVIDENCE`. On `ACK=true` with that evidence the row becomes
+`done`; a `MANUAL` result alone never completes it.
 
 ---
 
@@ -673,7 +675,9 @@ Then — this is an **attest** row — ask the user to confirm that the selected
 is the intended Workday tenant application and update **DA2.7** via
 [`shared/checklist-updater.md`](shared/checklist-updater.md) with
 `STEP_ID="DA2.7"`, `GATE="attest"`, `CHECKPOINT_RESULT` = the checkpoint result,
-and `ACK` = the user's explicit confirmation. Persist the DA2.0 `GATE_EVIDENCE`.
+and `ACK` = the user's explicit confirmation. Pass the selected application
+identity and tenant match as `ROW_EVIDENCE`, and persist the DA2.0
+`GATE_EVIDENCE`.
 
 ---
 
