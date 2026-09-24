@@ -92,6 +92,10 @@ class ComponentResult:
     """For ``CONFLICTED``: the customer's complete version, so every edit that could not
     be applied automatically is on record for manual re-application — not just the
     subset of nodes that conflicted."""
+    customer_state: str = ""
+    """The customer's enabled/disabled state when it could not be applied automatically
+    (i.e. it was lost to a payload conflict). Surfaced so the setting stays actionable
+    for manual re-application even though ESS's component was kept."""
 
     @property
     def needs_maker_work(self) -> bool:
@@ -551,7 +555,11 @@ def _merge_one(
         # is a real customization and must be carried, not silently dropped as
         # "unchanged" because the topic body happens to match.
         customer_state = _state_of(component)
-        state_changed = "state" in target and customer_state != target.get("state")
+        state_changed = (
+            customer_state is not None
+            and "state" in target
+            and customer_state != target.get("state")
+        )
         payload_unchanged = base_payload is not None and _equal(base_payload, ours)
 
         if payload_unchanged and not state_changed:
@@ -559,7 +567,7 @@ def _merge_one(
             base_result.detail = "Matches the shipped baseline; nothing to carry."
             return base_result
 
-        if payload_unchanged and state_changed:
+        if payload_unchanged and state_changed and customer_state is not None:
             _apply_state(target, customer_state)
             _mark_customized(target)
             base_result.outcome = Outcome.MERGED
@@ -583,6 +591,7 @@ def _merge_one(
                     "differences are yours",
                 )
             ]
+            _record_unapplied_state(base_result, state_changed, customer_state)
             return base_result
 
         resolve: ConflictResolver | None = None
@@ -620,15 +629,16 @@ def _merge_one(
             )
             if instruction_note:
                 base_result.detail = f"{base_result.detail} {instruction_note}"
+            _record_unapplied_state(base_result, state_changed, customer_state)
             return base_result
 
         target[shape.payload_key] = merged
-        if state_changed:
+        if state_changed and customer_state is not None:
             _apply_state(target, customer_state)
         _mark_customized(target)
         base_result.outcome = Outcome.MERGED
         detail = _merged_detail(decisions, instruction_note)
-        if state_changed:
+        if state_changed and customer_state is not None:
             detail = f"{detail} {_state_detail(customer_state)}"
         base_result.detail = detail
         return base_result
@@ -935,21 +945,53 @@ def _merge_list(
         reconcile(item["id"])
 
     # Ordering is load-bearing in a Power Fx action list: an action inserted before
-    # a terminal action (e.g. EndDialog) must stay before it. Start from ESS's
-    # sequence, then weave each surviving action the customer inserted back in
-    # *after the nearest preceding action that still exists* — the anchor that
-    # encodes where the customer put it. If no preceding action survives (and the
-    # insert was not at the very front), its position cannot be preserved, so raise
-    # a conflict rather than silently appending it to the end.
-    order: list[str] = [item["id"] for item in theirs if item["id"] in resolved]
-    for index, item in enumerate(ours):
+    # a terminal action (e.g. EndDialog) must stay before it, and a reorder the
+    # customer made is itself a customization. Merge the *order* three-way over the
+    # actions common to both sides, then weave in whichever side's inserts are not
+    # yet placed.
+    common = {item_id for item_id in resolved if item_id in ours_by_id and item_id in theirs_by_id}
+
+    def _relative(seq: list[Any]) -> list[str]:
+        return [item["id"] for item in seq if item["id"] in common]
+
+    # The customer's relative order wins only when ESS left the order alone; if both
+    # reordered the same set differently there is no automatic answer, so keep ESS's
+    # order and flag it. We can only attribute a reorder when the baseline actually
+    # contained every common action; otherwise fall back to ESS's sequence.
+    use_customer_order = False
+    if common and all(item_id in base_by_id for item_id in common):
+        base_order = _relative(base)
+        ours_order = _relative(ours)
+        theirs_order = _relative(theirs)
+        ours_reordered = ours_order != base_order
+        theirs_reordered = theirs_order != base_order
+        if ours_reordered and not theirs_reordered:
+            use_customer_order = True
+        elif ours_reordered and theirs_reordered and ours_order != theirs_order:
+            conflicts.append(
+                Conflict(
+                    path,
+                    base_order,
+                    ours_order,
+                    theirs_order,
+                    "you and ESS both reordered these actions differently; ESS's order "
+                    "was kept — re-check the sequence by hand",
+                )
+            )
+
+    # Spine = the side whose order we adopt for the common actions; weave = the other
+    # side, whose inserts we thread back in after their nearest surviving predecessor.
+    spine, weave = (ours, theirs) if use_customer_order else (theirs, ours)
+    weave_by_id = ours_by_id if weave is ours else theirs_by_id
+    order: list[str] = [item["id"] for item in spine if item["id"] in resolved]
+    for index, item in enumerate(weave):
         item_id = item["id"]
         if item_id not in resolved or item_id in order:
             continue
         anchor = next(
             (
                 order.index(prev["id"])
-                for prev in reversed(ours[:index])
+                for prev in reversed(weave[:index])
                 if prev["id"] in order
             ),
             None,
@@ -957,17 +999,30 @@ def _merge_list(
         if anchor is not None:
             order.insert(anchor + 1, item_id)
         elif index == 0:
-            order.insert(0, item_id)  # customer inserted at the very front
+            order.insert(0, item_id)  # inserted at the very front
+        elif weave is ours:
+            conflicts.append(
+                Conflict(
+                    f"{path}[{item_id}]",
+                    None,
+                    weave_by_id[item_id],
+                    None,
+                    "you inserted this action, but every action it followed is gone "
+                    "from the updated template, so its position cannot be preserved "
+                    "automatically — place it by hand",
+                )
+            )
+            order.append(item_id)
         else:
             conflicts.append(
                 Conflict(
                     f"{path}[{item_id}]",
                     None,
-                    ours_by_id[item_id],
                     None,
-                    "you inserted this action, but every action it followed is gone "
-                    "from the updated template, so its position cannot be preserved "
-                    "automatically — place it by hand",
+                    weave_by_id[item_id],
+                    "ESS added this action, but the actions it followed are gone from "
+                    "your reordered version, so its position cannot be placed "
+                    "automatically — check the sequence by hand",
                 )
             )
             order.append(item_id)
@@ -1018,3 +1073,23 @@ def _state_detail(state: str) -> str:
         f"You {verb} this topic; that setting was carried onto the DA component "
         "(verify it in the agent after import)."
     )
+
+
+def _record_unapplied_state(
+    result: ComponentResult, state_changed: bool, customer_state: str | None
+) -> None:
+    """Surface a customer enabled/disabled state that a payload conflict left behind.
+
+    On conflict ESS's whole component is kept, so the customer's state is not applied.
+    Record it as a structured field and a detail line so the setting stays visible and
+    actionable for manual re-application rather than vanishing with the discarded merge.
+    """
+    if not (state_changed and customer_state is not None):
+        return
+    result.customer_state = customer_state
+    verb = "disabled" if customer_state == "Inactive" else "enabled"
+    note = (
+        f"You had {verb} this topic; because of the conflict ESS's version was kept and "
+        "that setting was not applied — re-apply it by hand after import."
+    )
+    result.detail = f"{result.detail} {note}".strip()

@@ -176,6 +176,51 @@ def test_an_insert_whose_anchor_ess_deleted_is_flagged_not_silently_moved() -> N
     assert any("position cannot be preserved" in c.reason for c in conflicts)
 
 
+def test_a_customer_reorder_of_existing_actions_is_preserved() -> None:
+    # The customer reordered [a, b, end] to [b, a, end]; ESS only edited `a`'s payload
+    # (it left the order alone). Merging values alone would revert to ESS's order and
+    # silently lose the reorder — the customer's order must win when ESS did not touch it.
+    base = [{"id": "a", "v": 1}, {"id": "b", "v": 1}, {"id": "end", "kind": "EndDialog"}]
+    ours = [{"id": "b", "v": 1}, {"id": "a", "v": 1}, {"id": "end", "kind": "EndDialog"}]
+    theirs = [{"id": "a", "v": 2}, {"id": "b", "v": 1}, {"id": "end", "kind": "EndDialog"}]
+    merged, conflicts = merge_node(base, ours, theirs, path="actions")
+    assert conflicts == []
+    assert [item["id"] for item in merged] == ["b", "a", "end"]
+    # ESS's payload edit still lands on the reordered action.
+    assert next(item for item in merged if item["id"] == "a")["v"] == 2
+
+
+def test_both_sides_reordering_the_same_actions_differently_conflicts() -> None:
+    # The customer swapped a and b; ESS independently moved c to the front. There is no
+    # automatic answer, so keep ESS's order and flag the ordering conflict.
+    base = [{"id": "a", "v": 1}, {"id": "b", "v": 1}, {"id": "c", "v": 1}]
+    ours = [{"id": "b", "v": 1}, {"id": "a", "v": 1}, {"id": "c", "v": 1}]
+    theirs = [{"id": "c", "v": 1}, {"id": "a", "v": 1}, {"id": "b", "v": 1}]
+    merged, conflicts = merge_node(base, ours, theirs, path="actions")
+    assert [item["id"] for item in merged] == ["c", "a", "b"]  # ESS's order kept
+    assert any("both reordered these actions differently" in c.reason for c in conflicts)
+
+
+def test_both_sides_making_the_same_reorder_is_not_a_conflict() -> None:
+    base = [{"id": "a", "v": 1}, {"id": "b", "v": 1}]
+    ours = [{"id": "b", "v": 1}, {"id": "a", "v": 1}]
+    theirs = [{"id": "b", "v": 1}, {"id": "a", "v": 1}]
+    merged, conflicts = merge_node(base, ours, theirs, path="actions")
+    assert conflicts == []
+    assert [item["id"] for item in merged] == ["b", "a"]
+
+
+def test_a_reorder_cannot_be_attributed_without_a_baseline_so_it_is_not_flagged() -> None:
+    # With no baseline, a differing order is indistinguishable from ESS's own — fall
+    # back to ESS's sequence without inventing an ordering conflict.
+    base: list[Any] = []
+    ours = [{"id": "b", "v": 1}, {"id": "a", "v": 1}]
+    theirs = [{"id": "a", "v": 1}, {"id": "b", "v": 1}]
+    merged, conflicts = merge_node(base, ours, theirs, path="actions")
+    assert conflicts == []
+    assert [item["id"] for item in merged] == ["a", "b"]
+
+
 # --- overlays ---------------------------------------------------------------
 
 
@@ -318,6 +363,42 @@ def test_an_unchanged_active_topic_is_still_reported_as_unchanged() -> None:
     component = ca_component("topic.Foo", SIMPLE, statecode=0)
     result = merge(reference, {component.component_id: component}, "hr")
     assert result.results[0].outcome is Outcome.UNCHANGED
+
+
+def test_an_unknown_source_state_does_not_fabricate_an_enablement() -> None:
+    # The DA template ships this topic disabled. The customer left the body untouched
+    # and their source records no statecode (unknown). Missing metadata must not be
+    # read as a decision to enable — keep the template's state and claim nothing.
+    target = dialog_component("topic.Foo", _da_dialog(), state="Inactive", status="Inactive")
+    reference = reference_set([target], {"topic.Foo": SIMPLE})
+    component = ca_component("topic.Foo", SIMPLE, statecode=None)
+
+    result = merge(reference, {component.component_id: component}, "hr")
+    res = result.results[0]
+
+    assert res.outcome is Outcome.UNCHANGED
+    assert "enabled" not in res.detail
+    assert reference.da_components["topic.Foo"]["state"] == "Inactive"
+
+
+def test_a_disabled_topic_with_a_conflicting_edit_surfaces_the_lost_state() -> None:
+    # The customer disabled the topic AND made an edit that conflicts with ESS's. On
+    # conflict ESS's whole component is kept, so the disabled state is not applied —
+    # but it must stay visible and actionable, not vanish with the discarded merge.
+    theirs = _da_dialog()
+    theirs["beginDialog"]["actions"][0]["activity"] = "ess one"  # type: ignore[index]
+    reference = reference_set([dialog_component("topic.Foo", theirs)], {"topic.Foo": SIMPLE})
+    ours_data = SIMPLE.replace("activity: one", "activity: mine one")
+    component = ca_component("topic.Foo", ours_data, statecode=1)
+
+    result = merge(reference, {component.component_id: component}, "hr")
+    res = result.results[0]
+
+    assert res.outcome is Outcome.CONFLICTED
+    assert res.customer_state == "Inactive"
+    assert "disabled" in res.detail
+    # ESS's component is kept whole: the state was not silently applied.
+    assert reference.da_components["topic.Foo"]["state"] == "Active"
 
 
 def test_a_topic_with_no_template_counterpart_is_carried_wholesale() -> None:

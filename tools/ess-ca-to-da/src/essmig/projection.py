@@ -504,12 +504,20 @@ def load_fragment(text: str) -> Any:
     return _yaml().load(text)
 
 
-def _state_of(component: CaComponent) -> str:
-    """Map the CA ``statecode`` (0 = active, 1 = inactive) onto the DA state string."""
+def _state_of(component: CaComponent) -> str | None:
+    """Map the CA ``statecode`` (0 = active, 1 = inactive) onto the DA state string.
+
+    Returns ``None`` when the source records no usable ``statecode``: an absent state
+    is *unknown*, not a decision to enable, so callers must not treat it as one.
+    """
     statecode = component.statecode
     if isinstance(statecode, dict):
         statecode = statecode.get("Value")
-    return "Inactive" if statecode == 1 else "Active"
+    if statecode == 1:
+        return "Inactive"
+    if statecode == 0:
+        return "Active"
+    return None
 
 
 def _display_name_from(payload: Any) -> str:

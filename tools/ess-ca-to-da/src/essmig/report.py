@@ -143,6 +143,14 @@ def render_markdown(
         for result in conflicted:
             lines += ["", f"### {result.display_name or result.suffix}", ""]
             lines.append(f"`{result.schemaname}`")
+            if result.customer_state:
+                verb = "disabled" if result.customer_state == "Inactive" else "enabled"
+                lines += [
+                    "",
+                    f"> ⚠️ You had **{verb}** this topic. Because of the conflict the ESS "
+                    "version was kept and that setting was **not** applied — re-apply it "
+                    "by hand after import.",
+                ]
             for conflict in result.conflicts:
                 lines += [
                     "",
