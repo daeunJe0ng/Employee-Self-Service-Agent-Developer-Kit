@@ -119,14 +119,14 @@ ID, App ID URI) are safe to capture in chat — see
    **1. Workday extension package**
    - {m} Install the Workday extension package
 
-   **2. Workday single sign-on (Entra)**
-   - {m} Create the Workday single sign-on app
-   - {m} Expose the Workday API permission
-   - {m} Grant admin consent
-   - {m} Assign users to the Workday app
-   - {m} Map the sign-in identifier
-   - {m} Set the SAML signing option
-   - {m} Confirm a single sign-in tenant
+   **2. Connect Microsoft Entra sign-in to Workday**
+   - {m} Set up Workday sign-in
+   - {m} Allow Power Platform to call Workday
+   - {m} Approve the sign-in permissions
+   - {m} Choose who can use Workday
+   - {m} Match the signed-in employee
+   - {m} Sign the Workday sign-in response
+   - {m} Confirm the correct Microsoft Entra tenant
 
    **3. Workday tenant configuration**
    - {m} Register the Workday API client
@@ -135,11 +135,11 @@ ID, App ID URI) are safe to capture in chat — see
    - {m} Match the signing certificate
 
    **4. Power Platform and agent integration**
-   - {m} Connect the Workday account
-   - {m} Connect Microsoft Dataverse
-   - {m} Share the Workday connection parameters
+   - {m} Create the Workday connection
+   - {m} Create the Microsoft Dataverse connection
    - {m} Bind the extension connections
    - {m} Turn on the Workday cloud flows
+   - {m} Connect Workday to the agent
    - {m} Authorize the agent to use the Workday flows
    - {m} Configure employee context and topics
    - {m} Allow Workday through the firewall
