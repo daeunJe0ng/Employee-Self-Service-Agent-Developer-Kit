@@ -48,6 +48,7 @@ from flightcheck.runner import (
     BUCKET_MANUAL,
     BUCKET_PASSED,
 )
+from flightcheck.agent_scope import validate_agent_slug
 from flightcheck.graph_client import GraphClient
 from flightcheck.pp_admin_client import PPAdminClient, derive_environment_id
 from flightcheck.pva_client import PVAClient
@@ -707,6 +708,32 @@ def _is_native_no_dataverse(config: dict, env_url: str) -> bool:
     return str(active.get("releaseLine") or "").casefold() == "da"
 
 
+_PROVIDER_CONNECT_CONFIG_KEYS = frozenset({
+    "appIdUri",
+    "baseUrl",
+    "domainName",
+    "entraAppId",
+    "entraAppIdUri",
+    "entraAppObjectId",
+    "entraSSO",
+    "installPath",
+    "oauthClientId",
+    "oauthTokenUrl",
+    "ootbTopics",
+    "restBaseUrl",
+    "scopeGuid",
+    "setupStatus",
+    "sidecarDataverseEndpoint",
+    "soapBaseUrl",
+    "tenant",
+    "tenantId",
+    "tokenEndpoint",
+    "tokenHost",
+    "vertical",
+    "verticals",
+})
+
+
 def _merge_connect_config(config: dict, connect_config_path: str | None) -> dict:
     """Overlay provider-owned validation fields onto foundation config.
 
@@ -723,21 +750,9 @@ def _merge_connect_config(config: dict, connect_config_path: str | None) -> dict
     if not isinstance(overlay, dict):
         raise ValueError(f"{connect_config_path} must contain a JSON object")
 
-    foundation_keys = {
-        "_connectConfigPath",
-        "activeAgent",
-        "agent",
-        "agents",
-        "connections",
-        "dataverseEndpoint",
-        "environmentId",
-        "selected_products",
-        "setup",
-        "status",
-    }
-    for key, value in overlay.items():
-        if key not in foundation_keys:
-            merged[key] = value
+    for key in _PROVIDER_CONNECT_CONFIG_KEYS:
+        if key in overlay:
+            merged[key] = overlay[key]
     if not merged.get("dataverseEndpoint"):
         sidecar_endpoint = overlay.get("sidecarDataverseEndpoint")
         if isinstance(sidecar_endpoint, str) and sidecar_endpoint.strip():
@@ -761,6 +776,13 @@ def _run_single_checkpoint(args):
     from flightcheck import registry
 
     target = args.checkpoint
+    explicit_agent_slug = getattr(args, "agent_slug", None)
+    if explicit_agent_slug is not None:
+        try:
+            validate_agent_slug(explicit_agent_slug)
+        except ValueError as e:
+            print(f"ERROR: Invalid --agent-slug: {e}")
+            sys.exit(2)
     spec = registry.resolve(target)
     if spec is None:
         _print_unknown_checkpoint(target)
@@ -952,7 +974,7 @@ def _run_single_checkpoint(args):
     )
     runner.config = config
     runner.agent_slug = (
-        getattr(args, "agent_slug", None)
+        explicit_agent_slug
         or config.get("activeAgent")
         or (config.get("agent") or {}).get("slug")
         or ""
@@ -1206,6 +1228,11 @@ def main():
              "JSON, then exit without running any checks.",
     )
     args = parser.parse_args()
+    if args.agent_slug is not None:
+        try:
+            validate_agent_slug(args.agent_slug)
+        except ValueError as e:
+            parser.error(f"invalid --agent-slug: {e}")
 
     # --- Single-checkpoint mode (additive; leaves all --scope behavior intact) ---
     if args.list_checkpoints:

@@ -39,6 +39,7 @@ from defusedxml.common import DefusedXmlException
 
 from ..runner import CheckResult, Priority, Role, Status
 from .. import live_egress_probe
+from ..agent_scope import resolve_agent_directory
 from .infrastructure import (
     _infra_003_directive,
     _infra_003_probe_layer_note,
@@ -5107,9 +5108,7 @@ def _discover_customer_workday_scenarios(
     if not workspace_root.exists():
         return []
     if agent_slug:
-        if Path(agent_slug).name != agent_slug:
-            return []
-        agent_dirs = [workspace_root / agent_slug]
+        agent_dirs = [resolve_agent_directory(workspace_root, agent_slug)]
     else:
         agent_dirs = sorted(workspace_root.iterdir())
     discovered: list[dict] = []

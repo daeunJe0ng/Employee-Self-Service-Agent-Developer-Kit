@@ -120,6 +120,65 @@ class TestGates:
 
         assert merged["connections"]["Workday"]["tenant"] == "foundation"
 
+    def test_connect_config_only_merges_provider_owned_fields(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text(
+            json.dumps({
+                "tenant": "provider-tenant",
+                "releaseLine": "legacy",
+                "powerPlatformApiEndpoint": "https://wrong.example",
+                "workdayProbe": {"url": "https://wrong.example"},
+            }),
+            encoding="utf-8",
+        )
+
+        merged = cli._merge_connect_config(
+            {
+                "releaseLine": "da",
+                "powerPlatformApiEndpoint": "https://api.powerplatform.com",
+                "workdayProbe": {"url": "https://foundation.example"},
+            },
+            str(overlay),
+        )
+
+        assert merged["tenant"] == "provider-tenant"
+        assert merged["releaseLine"] == "da"
+        assert (
+            merged["powerPlatformApiEndpoint"]
+            == "https://api.powerplatform.com"
+        )
+        assert merged["workdayProbe"] == {
+            "url": "https://foundation.example"
+        }
+
+    @pytest.mark.parametrize(
+        "agent_slug",
+            (
+                ".",
+                "..",
+                "../other-agent",
+                r"..\other-agent",
+                "/tmp/agent",
+                "C:other-agent",
+                "other agent",
+            ),
+    )
+    def test_single_checkpoint_rejects_unsafe_explicit_agent_slug(
+        self,
+        tmp_path: Path,
+        agent_slug: str,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with pytest.raises(SystemExit) as exc:
+            cli._run_single_checkpoint(
+                _args("FAKE-001", tmp_path, agent_slug=agent_slug)
+            )
+
+        assert exc.value.code == 2
+        assert "ERROR: Invalid --agent-slug:" in capsys.readouterr().out
+
     def test_connect_config_supplies_sidecar_dataverse(
         self, tmp_path: Path
     ) -> None:
