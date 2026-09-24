@@ -583,6 +583,11 @@ class TestUserContextRedirect:
             "active",
             "  - kind: BeginDialog\n    dialog: WorkdaySystemGetUserContextV2\n",
         )
+        _write_installed_topic(
+            tmp_path,
+            "active",
+            "WorkdaySystemGetUserContextV2",
+        )
         _write_topic(tmp_path, "unrelated", "kind: AdaptiveDialog\n")
 
         runner = _Runner(config={}, agent_slug="active")
@@ -600,6 +605,16 @@ class TestUserContextRedirect:
             tmp_path,
             "other",
             "  - kind: BeginDialog\n    dialog: WorkdaySystemGetUserContextV2\n",
+        )
+        _write_installed_topic(
+            tmp_path,
+            "other",
+            "WorkdaySystemGetUserContextV2",
+        )
+        _write_installed_topic(
+            tmp_path,
+            "active",
+            "WorkdaySystemGetUserContextV3",
         )
         _write_topic(tmp_path, "active", "kind: AdaptiveDialog\n")
 

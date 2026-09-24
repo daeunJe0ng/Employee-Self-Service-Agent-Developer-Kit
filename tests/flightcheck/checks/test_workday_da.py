@@ -58,11 +58,22 @@ class _MinimalRunner:
     env_url: str | None
     dv_token: str | None
     config: dict[str, Any] = field(default_factory=dict)
+    agent_slug: str | None = None
 
 
 @pytest.fixture
 def runner(fake_dataverse_url: str, fake_token: str) -> _MinimalRunner:
     return _MinimalRunner(env_url=fake_dataverse_url, dv_token=fake_token)
+
+
+def _select_classic_hr(runner: _MinimalRunner) -> None:
+    runner.config = {
+        "activeAgent": "ess-hr",
+        "agents": [{
+            "slug": "ess-hr",
+            "schemaName": "msdyn_copilotforemployeeselfservicedahr",
+        }],
+    }
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -121,7 +132,9 @@ def test_skipped_when_token_missing() -> None:
 
 
 @responses.activate
-def test_failed_when_no_da_base_agent(runner: _MinimalRunner) -> None:
+def test_failed_when_selected_agent_is_unresolved(
+    runner: _MinimalRunner,
+) -> None:
     _register_solutions(solutions=[])
 
     results = _check_workday_da_package_installed(runner)
@@ -129,21 +142,28 @@ def test_failed_when_no_da_base_agent(runner: _MinimalRunner) -> None:
     r = results[0]
     assert r.checkpoint_id == "WD-DA-PKG-001"
     assert r.status == "Failed"
-    assert "No ESS DA HR agent" in r.result
-    assert "/setup" in r.remediation
+    assert "selected agent identity could not be resolved" in r.result
+    assert "--agent-slug" in r.remediation
 
 
 @responses.activate
 def test_failed_when_hr_base_agent_present_but_workday_child_missing(
     runner: _MinimalRunner,
 ) -> None:
+    runner.config = {
+        "activeAgent": "ess-hr",
+        "agents": [{
+            "slug": "ess-hr",
+            "schemaName": "msdyn_copilotforemployeeselfservicedahr",
+        }],
+    }
     _register_solutions(solutions=[
         _solution_record("msdyn_copilotforemployeeselfservicedahr"),
     ])
 
     r = _check_workday_da_package_installed(runner)[0]
     assert r.status == "Failed"
-    assert "HR" in r.result
+    assert "required by the ESS HR agent" in r.result
     assert "/connect workday" in r.remediation
 
 
@@ -195,25 +215,39 @@ def test_native_it_active_agent_is_rejected(
 
     result = _check_workday_da_package_installed(runner)[0]
     assert result.status == "Failed"
-    assert "active agent is the ESS DA IT agent" in result.result
+    assert "selected agent 'ess-it' is the ESS DA IT agent" in result.result
 
 
 @responses.activate
 def test_failed_when_only_it_base_agent_is_present(
     runner: _MinimalRunner,
 ) -> None:
+    runner.config = {
+        "activeAgent": "ess-it",
+        "agents": [{
+            "slug": "ess-it",
+            "schemaName": "msdyn_copilotforemployeeselfservicedait",
+        }],
+    }
     _register_solutions(solutions=[
         _solution_record("msdyn_copilotforemployeeselfservicedait"),
     ])
 
     r = _check_workday_da_package_installed(runner)[0]
     assert r.status == "Failed"
-    assert "ESS DA IT agent is installed" in r.result
+    assert "selected agent 'ess-it' is the ESS DA IT agent" in r.result
     assert "not supported" in r.remediation
 
 
 @responses.activate
 def test_passed_when_hr_workday_child_present(runner: _MinimalRunner) -> None:
+    runner.config = {
+        "activeAgent": "ess-hr",
+        "agents": [{
+            "slug": "ess-hr",
+            "schemaName": "msdyn_copilotforemployeeselfservicedahr",
+        }],
+    }
     _register_solutions(solutions=[
         _solution_record("msdyn_copilotforemployeeselfservicedahr"),
         _solution_record("msdyn_EssDAHRWorkday", version="2.0.0.1"),
@@ -232,6 +266,13 @@ def test_it_agent_does_not_block_supported_hr_package(
     runner: _MinimalRunner,
 ) -> None:
     """An IT agent in the environment is outside the active HR lifecycle."""
+    runner.config = {
+        "activeAgent": "ess-hr",
+        "agents": [{
+            "slug": "ess-hr",
+            "schemaName": "msdyn_copilotforemployeeselfservicedahr",
+        }],
+    }
     _register_solutions(solutions=[
         _solution_record("msdyn_copilotforemployeeselfservicedahr"),
         _solution_record("msdyn_copilotforemployeeselfservicedait"),
@@ -240,13 +281,87 @@ def test_it_agent_does_not_block_supported_hr_package(
 
     r = _check_workday_da_package_installed(runner)[0]
     assert r.status == "Passed"
-    assert "ESS HR agent detected" in r.result
+    assert "Selected ESS HR agent 'ess-hr' detected" in r.result
     assert "msdyn_EssDAHRWorkday" in r.result
+
+
+@responses.activate
+def test_explicit_slug_wins_over_different_active_agent(
+    runner: _MinimalRunner,
+) -> None:
+    runner.agent_slug = "selected-hr"
+    runner.config = {
+        "activeAgent": "active-it",
+        "agents": [
+            {
+                "slug": "active-it",
+                "schemaName": "msdyn_copilotforemployeeselfservicedait",
+            },
+            {
+                "slug": "selected-hr",
+                "schemaName": "msdyn_copilotforemployeeselfservicedahr",
+            },
+        ],
+    }
+    _register_solutions([
+        _solution_record("msdyn_EssDAHRWorkday"),
+    ])
+
+    result = _check_workday_da_package_installed(runner)[0]
+
+    assert result.status == "Passed"
+    assert "selected-hr" in result.result
+
+
+@pytest.mark.parametrize(
+    "agent_slug",
+    ("missing", "..", "../ess-hr", r"..\ess-hr", "C:ess-hr"),
+)
+def test_explicit_slug_must_resolve_to_canonical_agent(
+    runner: _MinimalRunner,
+    agent_slug: str,
+) -> None:
+    runner.agent_slug = agent_slug
+    runner.config = {
+        "activeAgent": "ess-hr",
+        "agents": [{
+            "slug": "ess-hr",
+            "schemaName": "msdyn_copilotforemployeeselfservicedahr",
+        }],
+    }
+
+    result = _check_workday_da_package_installed(runner)[0]
+
+    assert result.status == "Failed"
+    assert "selected agent identity could not be resolved" in result.result
+
+
+@responses.activate
+def test_environment_packages_do_not_substitute_for_selected_identity(
+    runner: _MinimalRunner,
+) -> None:
+    runner.config = {
+        "activeAgent": "unrelated",
+        "agents": [{
+            "slug": "unrelated",
+            "schemaName": "contoso_unrelated_agent",
+        }],
+    }
+    _register_solutions([
+        _solution_record("msdyn_copilotforemployeeselfservicedahr"),
+        _solution_record("msdyn_EssDAHRWorkday"),
+    ])
+
+    result = _check_workday_da_package_installed(runner)[0]
+
+    assert result.status == "Failed"
+    assert "not a supported ESS DA HR agent" in result.result
 
 
 @responses.activate
 def test_warning_when_dataverse_returns_500(runner: _MinimalRunner) -> None:
     """A transient platform error must surface as WARNING, not silently PASS."""
+    _select_classic_hr(runner)
     responses.add(
         "GET",
         dv.build_query_url(
@@ -271,6 +386,7 @@ def test_warning_when_dataverse_returns_401(runner: _MinimalRunner) -> None:
     Exercises the AuthExpiredError catch block in
     _check_workday_da_package_installed.
     """
+    _select_classic_hr(runner)
     responses.add(
         "GET",
         dv.build_query_url(

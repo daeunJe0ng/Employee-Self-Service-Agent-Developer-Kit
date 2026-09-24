@@ -17,6 +17,7 @@ Runnable in isolation via ``--checkpoint WD-DA-PKG-001``.
 """
 
 from ..runner import CheckResult, Priority, Role, Status
+from ..agent_scope import validate_agent_slug
 from auth import query_all, AuthExpiredError  # scripts/auth.py, on path via cli.py
 
 
@@ -79,6 +80,46 @@ def _check_workday_da_package_installed(runner) -> list[CheckResult]:
             "Dataverse URL or access token not available in this run.",
         )]
 
+    selected = _selected_agent(runner)
+    if selected is None:
+        return [_result(
+            Status.FAILED.value,
+            "The selected agent identity could not be resolved from the "
+            "workspace configuration.",
+            remediation=(
+                "Select the intended ESS DA HR agent, refresh the local "
+                "workspace configuration, and rerun this checkpoint with its "
+                "--agent-slug value."
+            ),
+        )]
+
+    selected_slug, selected_agent = selected
+    selected_schema = str(
+        selected_agent.get("schemaName")
+        or selected_agent.get("schema_name")
+        or ""
+    ).casefold()
+    if selected_schema in _DA_IT_AGENT_SCHEMAS:
+        return [_result(
+            Status.FAILED.value,
+            f"The selected agent '{selected_slug}' is the ESS DA IT agent.",
+            remediation=(
+                "Workday integration with the ESS IT Agent is not supported "
+                "in this release. Select the ESS HR Agent first."
+            ),
+        )]
+    if selected_schema not in _DA_HR_AGENT_SCHEMAS:
+        return [_result(
+            Status.FAILED.value,
+            f"The selected agent '{selected_slug}' is not a supported ESS DA "
+            "HR agent.",
+            remediation=(
+                "Select the installed ESS DA HR agent and rerun this "
+                "checkpoint. Do not use environment-wide package presence as "
+                "a substitute for selected-agent identity."
+            ),
+        )]
+
     try:
         all_solutions = query_all(
             env_url, token,
@@ -110,68 +151,9 @@ def _check_workday_da_package_installed(runner) -> list[CheckResult]:
         s.get("uniquename", "").casefold(): s for s in all_solutions
     }
 
-    config = getattr(runner, "config", {}) or {}
-    agents = config.get("agents") if isinstance(config, dict) else []
-    active_slug = config.get("activeAgent") if isinstance(config, dict) else None
-    active_agent = next(
-        (
-            agent
-            for agent in agents or []
-            if isinstance(agent, dict) and agent.get("slug") == active_slug
-        ),
-        None,
-    )
-    if not isinstance(active_agent, dict):
-        candidate = config.get("agent") if isinstance(config, dict) else None
-        active_agent = candidate if isinstance(candidate, dict) else {}
-    active_schema = str(
-        active_agent.get("schemaName")
-        or active_agent.get("schema_name")
-        or ""
-    ).casefold()
-
-    if active_schema in _DA_IT_AGENT_SCHEMAS:
-        return [_result(
-            Status.FAILED.value,
-            "The active agent is the ESS DA IT agent.",
-            remediation=(
-                "Workday integration with the ESS IT Agent is not supported "
-                "in this release. Select the ESS HR Agent first."
-            ),
-        )]
-
-    hr_installed = (
-        active_schema in _DA_HR_AGENT_SCHEMAS
-        or _DA_HR_PARENT_SCHEMA in installed_names
-    )
-    it_installed = (
-        active_schema in _DA_IT_AGENT_SCHEMAS
-        or _DA_IT_PARENT_SCHEMA in installed_names
-    )
-
-    if not hr_installed and it_installed:
-        return [_result(
-            Status.FAILED.value,
-            "An ESS DA IT agent is installed, but no ESS DA HR agent was found.",
-            remediation=(
-                "Workday integration with the ESS IT Agent is not supported "
-                "in this release. Contact your administrator."
-            ),
-        )]
-
-    if not hr_installed:
-        return [_result(
-            Status.FAILED.value,
-            "No ESS DA HR agent was found in this environment.",
-            remediation=(
-                "Run /setup to install the ESS DA HR agent first, then run "
-                "/connect workday again."
-            ),
-        )]
-
     required_schema = (
         _MOS_WORKDAY_RUNTIME_SCHEMA
-        if active_schema == "gptagent_copilotforemployeeselfservicehr"
+        if selected_schema == "gptagent_copilotforemployeeselfservicehr"
         else _DA_HR_WORKDAY_CHILD_SCHEMA
     )
     child = installed_names.get(required_schema.casefold())
@@ -188,9 +170,43 @@ def _check_workday_da_package_installed(runner) -> list[CheckResult]:
 
     return [_result(
         Status.PASSED.value,
-        "ESS HR agent detected. Workday package installed: "
+        f"Selected ESS HR agent '{selected_slug}' detected. Workday package "
+        "installed: "
         f"{_describe_solution(child)}.",
     )]
+
+
+def _selected_agent(runner) -> tuple[str, dict] | None:
+    """Resolve the exact selected agent without environment-wide inference."""
+    config = getattr(runner, "config", {}) or {}
+    if not isinstance(config, dict):
+        return None
+
+    legacy_agent = config.get("agent")
+    legacy_agent = legacy_agent if isinstance(legacy_agent, dict) else {}
+    slug = (
+        getattr(runner, "agent_slug", None)
+        or config.get("activeAgent")
+        or legacy_agent.get("slug")
+    )
+    if not slug:
+        return None
+    try:
+        selected_slug = validate_agent_slug(str(slug))
+    except ValueError:
+        return None
+
+    agents = config.get("agents")
+    if isinstance(agents, list):
+        for agent in agents:
+            if (
+                isinstance(agent, dict)
+                and str(agent.get("slug") or "") == selected_slug
+            ):
+                return selected_slug, agent
+    if str(legacy_agent.get("slug") or "") == selected_slug:
+        return selected_slug, legacy_agent
+    return None
 
 
 def _result(status: str, result: str, remediation: str = "") -> CheckResult:
