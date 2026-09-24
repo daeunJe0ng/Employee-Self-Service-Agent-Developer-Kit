@@ -1257,7 +1257,6 @@ def _run_profile(args):
     runner.azure_arm = None
     runner.agentbuilder = agentbuilder
     runner.connectivity = connectivity
-    runner._profile_stub_checkpoint_ids = set(profile.checkpoint_ids)
 
     for label, fn in plan.ordered_fns:
         runner.register(label, fn)

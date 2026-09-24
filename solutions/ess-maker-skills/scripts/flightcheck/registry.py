@@ -42,7 +42,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from flightcheck.runner import CheckResult, Priority, Role, Status
+from flightcheck.runner import Priority, Role
 from flightcheck.checks.entra_app import run_entra_app_checks
 from flightcheck.checks.environment import (
     run_capacity_check,
@@ -111,50 +111,7 @@ CATEGORY_ORDER = [
     "Licensing",
     "Publishing",
     "Cloud Policies",
-    "Profile Stubs",
 ]
-
-
-PROFILE_STUB_CHECKPOINT_IDS = frozenset({"WD-CONN-013"})
-
-
-def run_profile_stub_checks(runner) -> list[CheckResult]:
-    """Emit explicit not-yet-implemented rows for profile members.
-
-    Profiles must not silently drop future-wave checkpoint IDs. Returning a
-    visible Manual row keeps the contract callable without pretending the
-    later-wave checkpoint has run.
-    """
-    requested = getattr(
-        runner,
-        "_profile_stub_checkpoint_ids",
-        PROFILE_STUB_CHECKPOINT_IDS,
-    )
-    results: list[CheckResult] = []
-    for checkpoint_id in sorted(PROFILE_STUB_CHECKPOINT_IDS & set(requested)):
-        results.append(
-            CheckResult(
-                checkpoint_id=checkpoint_id,
-                category="Profile Stubs",
-                priority=Priority.HIGH.value,
-                status=Status.MANUAL.value,
-                description=f"{checkpoint_id} profile member placeholder",
-                result=(
-                    f"{checkpoint_id} is registered in the callable profile "
-                    "contract, but its validation logic belongs to a later wave."
-                ),
-                remediation=(
-                    "No tenant action is available from this placeholder. "
-                    "Run the later-wave FlightCheck implementation when it is "
-                    "added."
-                ),
-                roles=[Role.ESS_MAKER.value],
-                automation_type="manual",
-                remediation_id=checkpoint_id,
-                evidence={"implemented": False},
-            )
-        )
-    return results
 
 
 @dataclass(frozen=True)
@@ -570,16 +527,6 @@ _SPECS: list[CheckpointSpec] = [
         requires_config=True,
         requires_dataverse_endpoint=True,
         prereqs=("WD-PKG-001", "WD-001"),
-        priority=Priority.HIGH.value,
-        roles=(Role.ESS_MAKER.value,),
-    ),
-    CheckpointSpec(
-        key="WD-CONN-013",
-        category_fn=run_profile_stub_checks,
-        category_label="Profile Stubs",
-        clients=frozenset(),
-        requires_config=True,
-        requires_dataverse_endpoint=False,
         priority=Priority.HIGH.value,
         roles=(Role.ESS_MAKER.value,),
     ),

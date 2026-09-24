@@ -132,21 +132,29 @@ def test_profiles_are_registered_with_resolvable_checkpoint_members() -> None:
             assert registry.resolve(checkpoint_id) is not None
 
 
-def test_profile_matching_includes_stubbed_later_wave_checkpoint() -> None:
+def test_profile_wd_conn_013_resolves_to_real_workday_check() -> None:
+    # WD-CONN-013 (agent connection OBO parameter sharing) is a fully
+    # implemented, tested check in checks/workday.py, emitted by
+    # run_workday_checks. It must resolve to the real WD-CONN family /
+    # Workday category, NOT a placeholder stub.
     profile = registry.resolve_profile("workday-da:post-connection")
 
     assert profile is not None
     assert "WD-CONN-013" in profile.checkpoint_ids
-    assert registry.resolve("WD-CONN-013") is not None
+    spec = registry.resolve("WD-CONN-013")
+    assert spec is not None
+    assert spec.category_label == "Workday"
     assert registry.profile_matches("workday-da:post-connection", "WD-CONN-013")
 
 
-def test_profile_plan_orders_stub_after_real_workday_categories() -> None:
+def test_profile_plan_runs_wd_conn_013_via_real_workday_category() -> None:
     plan = registry.profile_requirements("workday-da:post-connection")
     labels = [label for label, _fn in plan.ordered_fns]
 
-    assert "Profile Stubs" in labels
-    assert labels.index("Workday") < labels.index("Profile Stubs")
+    # No placeholder "Profile Stubs" category exists; WD-CONN-013 runs inside
+    # the real Workday category.
+    assert "Profile Stubs" not in labels
+    assert "Workday" in labels
 
 
 def test_connection_state_fixtures_cover_required_states() -> None:
