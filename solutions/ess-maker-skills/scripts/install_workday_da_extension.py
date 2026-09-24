@@ -31,7 +31,7 @@ WORKDAY_PACKAGES = {
     },
 }
 CLOUD_FOR_RING = {
-    "preprod": "Preprod",
+    "preprod": "Public",
     "prod": "Public",
 }
 _PROFILE_RE = re.compile(r"^\s*\[(\d+)\]\s*(\*)?\s*(.*)$")
@@ -131,21 +131,18 @@ def ensure_pac_auth(
         if listed.returncode == 0
         else []
     )
+    normalized_environment = environment_url.rstrip("/").casefold()
     cloud_matching = [
         profile
         for profile in profiles
         if profile["cloud"].casefold() == cloud.casefold()
     ]
-    if ring == "preprod":
-        normalized_environment = environment_url.rstrip("/").casefold()
-        matching = [
-            profile
-            for profile in cloud_matching
-            if (profile["environment_url"] or "").casefold()
-            == normalized_environment
-        ]
-    else:
-        matching = cloud_matching
+    matching = [
+        profile
+        for profile in cloud_matching
+        if (profile["environment_url"] or "").rstrip("/").casefold()
+        == normalized_environment
+    ]
     active = [profile for profile in matching if profile["active"]]
     if len(active) == 1:
         return
@@ -176,9 +173,9 @@ def ensure_pac_auth(
         "create",
         "--cloud",
         cloud,
+        "--environment",
+        environment_url.rstrip("/"),
     ]
-    if ring == "preprod":
-        command.extend(["--environment", environment_url])
     command.append("--deviceCode")
     authenticated = runner(
         command,
