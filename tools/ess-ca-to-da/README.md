@@ -98,6 +98,31 @@ of what needs a human — is as much the deliverable as the package is.
 
 ## Install
 
+### Clean machine, one command
+
+On a machine with **nothing installed** — no Git, no Python, no clone of this
+repo — a single command fetches the tool and leaves you ready to run it. It
+ensures Git, shallow-clones the repository (which brings the tool and its
+vendored reference data), and drops you in the tool folder with the exact
+command to run next. It does **not** start a migration for you.
+
+```powershell
+# Windows (PowerShell) — leaves you in the tool folder, ready to run
+iex (irm https://raw.githubusercontent.com/microsoft/Employee-Self-Service-Agent-Developer-Kit/main/tools/ess-ca-to-da/bootstrap.ps1)
+```
+
+```bash
+# macOS / Linux — prints the `cd` command to copy (a piped script can't move your shell)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/microsoft/Employee-Self-Service-Agent-Developer-Kit/main/tools/ess-ca-to-da/bootstrap.sh)"
+```
+
+The repository is cloned to `~/Employee-Self-Service-Agent-Developer-Kit` by
+default. Override with `ESS_CA_TO_DA_ROOT`, pick a branch with `ESS_ADK_BRANCH`,
+or a fork with `ESS_ADK_SOURCE_URL`. From there, `run.ps1` / `run.sh` (below)
+takes care of Python and the tool itself.
+
+### Already have the repo
+
 The quickest path needs **nothing installed first** — not even Python. A launcher
 resolves (and, if missing, installs) Python 3.11+, creates a private `.venv`, and
 installs the tool into it on first run, then forwards your arguments straight to
