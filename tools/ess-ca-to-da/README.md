@@ -146,6 +146,14 @@ Python via `winget`; on macOS via Homebrew. Force the tool to reinstall into the
 `.venv` after a code change with `.\run.ps1 -Reinstall` (or `ESSMIG_REINSTALL=1
 ./run.sh`).
 
+> **Windows "running scripts is disabled on this system"?** A clean Windows
+> client blocks `.ps1` files by default. The one-command bootstrap above relaxes
+> this for you. If you cloned manually, either allow local scripts once —
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` — or run the launcher
+> without changing anything:
+> `powershell -ExecutionPolicy Bypass -File .\run.ps1 inspect --environment-url ...`.
+
+
 If you would rather manage Python yourself:
 
 ```powershell

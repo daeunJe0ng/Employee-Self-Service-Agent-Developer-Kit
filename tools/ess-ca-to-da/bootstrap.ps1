@@ -76,7 +76,27 @@ if (Test-Path (Join-Path $Root '.git')) {
 }
 Write-Ok 'Repository ready.'
 
-# --- 3. Land in the tool folder with next-step instructions -----------------
+# --- 3. Make sure script files are allowed to run ---------------------------
+# A clean Windows client defaults to a Restricted execution policy, which blocks
+# .ps1 files on disk (this bootstrap itself is exempt because it runs from a
+# pipeline, not a file). Relax it to RemoteSigned for the current user only —
+# no admin, no machine-wide change — so run.ps1 can run directly. If a machine
+# or Group Policy still forces a blocking policy, fall back to a per-invocation
+# bypass that needs no configuration.
+function Get-RunPrefix {
+    $blocking = @('Restricted', 'AllSigned', 'Undefined')
+    if ((Get-ExecutionPolicy) -notin $blocking) { return '.\run.ps1' }
+    try {
+        Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force -ErrorAction Stop
+        Write-Info 'Allowed local scripts to run (set execution policy RemoteSigned for your user).'
+    } catch {
+        Write-Warn2 'Could not change the execution policy (a machine/Group Policy may enforce it).'
+    }
+    if ((Get-ExecutionPolicy) -notin $blocking) { return '.\run.ps1' }
+    return 'powershell -ExecutionPolicy Bypass -File .\run.ps1'
+}
+
+# --- 4. Land in the tool folder with next-step instructions -----------------
 $tool = Join-Path $Root 'tools\ess-ca-to-da'
 if (-not (Test-Path $tool)) {
     Write-Warn2 "Expected the tool at $tool but it is not there."
@@ -84,16 +104,18 @@ if (-not (Test-Path $tool)) {
 }
 Set-Location $tool
 
+$run = Get-RunPrefix
+
 Write-Host ''
 Write-Ok "You're ready. You are now in: $tool"
 Write-Host ''
 Write-Host '  Next, run one of these (run.ps1 sets up Python and the tool on first use):' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '    # See what a customer customized (read-only):' -ForegroundColor DarkGray
-Write-Host '    .\run.ps1 inspect --environment-url https://contoso.crm.dynamics.com' -ForegroundColor White
+Write-Host "    $run inspect --environment-url https://contoso.crm.dynamics.com" -ForegroundColor White
 Write-Host ''
 Write-Host '    # Produce the Declarative Agent package and migration report:' -ForegroundColor DarkGray
-Write-Host '    .\run.ps1 migrate --environment-url https://contoso.crm.dynamics.com --out out' -ForegroundColor White
+Write-Host "    $run migrate --environment-url https://contoso.crm.dynamics.com --out out" -ForegroundColor White
 Write-Host ''
 Write-Host '  Add --vertical core|hr|it to target one agent, or omit it to detect them all.' -ForegroundColor DarkGray
 Write-Host ''
