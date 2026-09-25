@@ -224,8 +224,17 @@ Select the Employee Self-Service agent you want to connect, then run
 
 Stop without creating integration state.
 
-If the active agent has `releaseLine: "da"` or its schema name identifies a
-Declarative Agent, show:
+Treat these schema names as Declarative Agents:
+
+- `gptagent_copilotforemployeeselfservicehr`
+- `gptagent_copilotforemployeeselfserviceit`
+- `msdyn_copilotforemployeeselfservicedahr`
+- `msdyn_copilotforemployeeselfservicedait`
+
+Also treat any other active agent with `releaseLine: "da"` as Declarative.
+Never infer architecture from retired product inventory.
+
+For a Declarative Agent, show:
 
 **Message:**
 
@@ -235,7 +244,9 @@ release. Please contact your administrator.
 **End message.**
 
 Stop immediately. Do not create CEA Workday lifecycle state or run its package
-check.
+check. `WD-PKG-001` is a CEA package fingerprint and is not an architecture
+discriminator. DA package discovery uses `WD-DA-PKG-001` only from an explicit
+DA setup path.
 
 For a CEA agent, check the currently installed Workday extension before
 honoring lifecycle state:
