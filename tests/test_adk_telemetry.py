@@ -16,7 +16,8 @@ What we lock down:
   * identity: random ``instance_id`` dedup + raw ``tenant_id``, no developer id.
   * common-dimensions shape + Common Schema 4.0 envelope.
   * error-field scrubbing/attachment (no paths / URLs / newlines leak).
-  * consent: env override + ``~/.adk/config`` opt-out, one-time notice.
+  * consent: env override + ``~/.adk/config`` opt-out (README/CONTRIBUTING
+    carry the disclosure; no runtime banner is printed).
   * session: persists across calls, rolls after the 30-min window.
   * run-index counter: per-agent within a session.
   * ikey resolution (shared default env, env override, raw-key override).
@@ -62,13 +63,24 @@ def _isolate(monkeypatch, tmp_path):
     # these on _fc at runtime, so patching them here redirects the cache dir.
     _cache_dir = str(tmp_path / ".local")
     _real_cache, _real_get = _fc.cache_tenant_name, _fc.get_cached_tenant_name
+    _real_cache_id, _real_get_id = _fc.cache_tenant_id, _fc.get_cached_tenant_id
     monkeypatch.setattr(
         _fc, "cache_tenant_name",
-        lambda tid, name, local_dir=_cache_dir: _real_cache(tid, name, local_dir=local_dir),
+        lambda tid, name, local_dir=_cache_dir, source="organization": _real_cache(
+            tid, name, local_dir=local_dir, source=source
+        ),
     )
     monkeypatch.setattr(
         _fc, "get_cached_tenant_name",
         lambda tid, local_dir=_cache_dir: _real_get(tid, local_dir=local_dir),
+    )
+    monkeypatch.setattr(
+        _fc, "cache_tenant_id",
+        lambda tid, local_dir=_cache_dir: _real_cache_id(tid, local_dir=local_dir),
+    )
+    monkeypatch.setattr(
+        _fc, "get_cached_tenant_id",
+        lambda local_dir=_cache_dir: _real_get_id(local_dir=local_dir),
     )
 
     for var in (
@@ -95,19 +107,84 @@ def captured_post(monkeypatch):
     return calls
 
 
+def _client_events_envelope(**overrides):
+    envelope = {
+        "schemaVersion": 2,
+        "batchId": "batch-test",
+        "mountId": "mount-test",
+        "appName": "AgentIcon",
+        "buildEnvironment": "dev",
+        "buildNumber": "0",
+        "toolCallId": "tool-test",
+        "events": [
+            {
+                "eventName": "WidgetReady",
+                "level": "info",
+                "eventTimestamp": "2026-09-11T23:21:26.196Z",
+                "timeSinceMount": 12,
+                "sequenceNumber": 1,
+                "locale": "en-US",
+                "properties": {
+                    "count": 1,
+                    "flag": True,
+                    "label": "loaded",
+                    "tags": ["a", 2, False, None],
+                },
+            },
+            {
+                "eventName": "WidgetFunnelStage",
+                "level": "info",
+                "eventTimestamp": "2026-09-11T23:21:26.206Z",
+                "timeSinceMount": 18.5,
+                "sequenceNumber": 2,
+                "properties": {"stage": "loaded"},
+            },
+        ],
+    }
+    envelope.update(overrides)
+    events = envelope.get("events")
+    if isinstance(events, list):
+        normalized_events = []
+        for index, event in enumerate(events):
+            if not isinstance(event, dict):
+                normalized_events.append(event)
+                continue
+            normalized = dict(event)
+            normalized.setdefault("level", "info")
+            normalized.setdefault("eventTimestamp", "2026-09-11T23:21:26.196Z")
+            normalized.setdefault("timeSinceMount", index + 1)
+            normalized.setdefault("sequenceNumber", index + 1)
+            normalized_events.append(normalized)
+        envelope["events"] = normalized_events
+    return envelope
+
+
 # --- identity (instance_id; no developer identity) ------------------------
 def test_set_identity_stores_instance_and_raw_tenant(monkeypatch):
     monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
-    ident = adk.set_identity(tenant_id="tenant-Z")
+    ident = adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000ab")
     # No developer/user identifier is ever collected.
     assert "developer_id" not in ident
     assert ident["instance_id"] == "install-guid-1"
-    assert ident["tenant_id"] == "tenant-Z"
+    assert ident["tenant_id"] == "00000000-0000-0000-0000-0000000000ab"
+
+
+def test_initialize_tenant_identity_uses_explicit_cache_root(tmp_path, monkeypatch):
+    local_dir = str(tmp_path / "solution-local")
+    tenant_id = "00000000-0000-0000-0000-0000000000ab"
+    _fc.cache_tenant_name(tenant_id, "Contoso", local_dir=local_dir)
+    monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
+
+    ident = adk.initialize_tenant_identity(tenant_id, local_dir=local_dir)
+
+    assert ident["tenant_id"] == tenant_id
+    assert ident["tenant_name"] == "Contoso"
+    assert _fc.get_cached_tenant_id(local_dir=local_dir) == tenant_id
 
 
 def test_set_identity_stores_tenant_name(monkeypatch):
     monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
-    ident = adk.set_identity(tenant_id="tenant-Z", tenant_name="Contoso")
+    ident = adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000ab", tenant_name="Contoso")
     assert ident["tenant_name"] == "Contoso"
     # Flows into every event's common dimensions (OII; privacy-approved).
     dims = adk.common_dimensions(adk.SURFACE_CLI, session_id="sid-1")
@@ -115,29 +192,29 @@ def test_set_identity_stores_tenant_name(monkeypatch):
     # Once resolved, the name is cached per-tenant and reused by later ADK
     # events that lack a Graph token to resolve it live (persist-and-reuse),
     # even when set_identity is later called for the same tenant without it.
-    adk.set_identity(tenant_id="tenant-Z")
+    adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000ab")
     assert adk.common_dimensions(adk.SURFACE_CLI)["tenant_name"] == "Contoso"
 
 
 def test_tenant_name_empty_when_never_resolved(monkeypatch):
     # No Graph-capable flow ever resolved a name for this tenant -> stays "".
     monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
-    adk.set_identity(tenant_id="tenant-Z")
+    adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000ab")
     assert adk.common_dimensions(adk.SURFACE_CLI, session_id="sid-1")["tenant_name"] == ""
 
 
 def test_tenant_name_cache_not_reused_across_tenants(monkeypatch):
-    # A name cached for tenant-Z must never be stamped on a different tenant's
+    # A name cached for 00000000-0000-0000-0000-0000000000ab must never be stamped on a different tenant's
     # events (the cache is keyed by tenant_id). Simulates a maker who resolved
-    # tenant-Z via FlightCheck, then runs an ADK flow authenticated as tenant-Y.
+    # 00000000-0000-0000-0000-0000000000ab via FlightCheck, then runs an ADK flow authenticated as 00000000-0000-0000-0000-0000000000cd.
     monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
-    adk.set_identity(tenant_id="tenant-Z", tenant_name="Contoso")  # seeds cache
+    adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000ab", tenant_name="Contoso")  # seeds cache
     monkeypatch.setattr(
         adk, "_IDENTITY", {"instance_id": "", "tenant_id": "", "tenant_name": ""}
     )
-    adk.set_identity(tenant_id="tenant-Y")  # different tenant, no name available
+    adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000cd")  # different tenant, no name available
     dims = adk.common_dimensions(adk.SURFACE_CLI, session_id="sid-1")
-    assert dims["tenant_id"] == "tenant-Y"
+    assert dims["tenant_id"] == "00000000-0000-0000-0000-0000000000cd"
     assert dims["tenant_name"] == ""
 
 
@@ -146,33 +223,95 @@ def test_tenant_name_reused_by_later_process_without_identity(monkeypatch):
     # set_identity should still pick up a name a prior FlightCheck run cached
     # for the same tenant, via the common_dimensions fallback.
     monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
-    adk.set_identity(tenant_id="tenant-Z", tenant_name="Contoso")  # FlightCheck run
+    adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000ab", tenant_name="Contoso")  # FlightCheck run
     # Later process: fresh identity, no set_identity call, but tenant_id known.
     monkeypatch.setattr(
         adk, "_IDENTITY", {"instance_id": "", "tenant_id": "", "tenant_name": ""}
     )
-    dims = adk.common_dimensions(adk.SURFACE_CLI, tenant_id="tenant-Z")
+    dims = adk.common_dimensions(adk.SURFACE_CLI, tenant_id="00000000-0000-0000-0000-0000000000ab")
     assert dims["tenant_name"] == "Contoso"
+
+
+def test_tenant_id_reused_by_fresh_subprocess_without_identity(monkeypatch):
+    # Reproduces the emit_capability.py shim scenario: SKILL.md steps launch
+    # `python scripts/emit_capability.py <cap>` as a *fresh* Python subprocess,
+    # which never calls set_identity. Without the on-disk tenant_id fallback,
+    # such a subprocess emits with tenant_id="" -> classify_tenant("")=="unknown",
+    # so the capability event never appears on the customer-filtered External
+    # dashboard even though the maker's earlier auth flow knew the tenant.
+    monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
+    # Auth flow (parent process) persists tenant_id.
+    adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000ab")
+    # Subprocess simulation: brand-new interpreter -> empty _IDENTITY, no
+    # set_identity call.
+    monkeypatch.setattr(
+        adk, "_IDENTITY", {"instance_id": "", "tenant_id": "", "tenant_name": ""}
+    )
+    dims = adk.common_dimensions(adk.SURFACE_CLI, session_id="sid-1")
+    # The persisted GUID is picked up and the event classifies as customer,
+    # not unknown.
+    assert dims["tenant_id"] == "00000000-0000-0000-0000-0000000000ab"
+    assert dims["tenant_class"] == _fc.TENANT_CLASS_CUSTOMER
+
+
+def test_tenant_id_explicit_kwarg_wins_over_cached(monkeypatch):
+    # An explicit tenant_id passed by the caller must always win, even when a
+    # different tenant_id sits in the on-disk cache (e.g. subprocess is
+    # emitting on behalf of a specific tenant that isn't the last-cached one).
+    monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
+    adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000ab")  # writes 00000000-0000-0000-0000-0000000000ab to disk
+    monkeypatch.setattr(
+        adk, "_IDENTITY", {"instance_id": "", "tenant_id": "", "tenant_name": ""}
+    )
+    dims = adk.common_dimensions(adk.SURFACE_CLI, tenant_id="00000000-0000-0000-0000-0000000000cd")
+    assert dims["tenant_id"] == "00000000-0000-0000-0000-0000000000cd"
+
+
+def test_tenant_id_explicit_empty_kwarg_does_not_fall_back(monkeypatch):
+    # An explicit empty tenant_id (caller genuinely knows there is none)
+    # must NOT be overridden by the disk cache — that would leak a stale
+    # tenant_id onto an event the caller deliberately marked anonymous.
+    monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
+    adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000ab")
+    monkeypatch.setattr(
+        adk, "_IDENTITY", {"instance_id": "", "tenant_id": "", "tenant_name": ""}
+    )
+    dims = adk.common_dimensions(adk.SURFACE_CLI, tenant_id="")
+    assert dims["tenant_id"] == ""
+
+
+def test_cache_tenant_id_round_trip_and_guards(tmp_path):
+    d = str(tmp_path / "state")
+    _fc.cache_tenant_id("00000000-0000-0000-0000-0000000000ab", local_dir=d)
+    assert _fc.get_cached_tenant_id(local_dir=d) == "00000000-0000-0000-0000-0000000000ab"
+    # Missing dir/file -> "".
+    assert _fc.get_cached_tenant_id(local_dir=str(tmp_path / "nope")) == ""
+    # Empty tenant_id is a no-op (never overwrite a valid cache with "").
+    _fc.cache_tenant_id("", local_dir=d)
+    assert _fc.get_cached_tenant_id(local_dir=d) == "00000000-0000-0000-0000-0000000000ab"
+    # Whitespace is stripped on write.
+    _fc.cache_tenant_id("  00000000-0000-0000-0000-0000000000cd  ", local_dir=d)
+    assert _fc.get_cached_tenant_id(local_dir=d) == "00000000-0000-0000-0000-0000000000cd"
 
 
 def test_cache_tenant_name_round_trip_and_guards(tmp_path):
     d = str(tmp_path / "state")
     # Round-trip for a matching tenant.
-    _fc.cache_tenant_name("tenant-Z", "Contoso", local_dir=d)
-    assert _fc.get_cached_tenant_name("tenant-Z", local_dir=d) == "Contoso"
+    _fc.cache_tenant_name("00000000-0000-0000-0000-0000000000ab", "Contoso", local_dir=d)
+    assert _fc.get_cached_tenant_name("00000000-0000-0000-0000-0000000000ab", local_dir=d) == "Contoso"
     # Mismatched tenant never inherits the cached name.
-    assert _fc.get_cached_tenant_name("tenant-Y", local_dir=d) == ""
+    assert _fc.get_cached_tenant_name("00000000-0000-0000-0000-0000000000cd", local_dir=d) == ""
     # Missing dir/file -> "".
-    assert _fc.get_cached_tenant_name("tenant-Z", local_dir=str(tmp_path / "nope")) == ""
+    assert _fc.get_cached_tenant_name("00000000-0000-0000-0000-0000000000ab", local_dir=str(tmp_path / "nope")) == ""
     # Malformed / non-dict cache content -> "" (defensive; never raises).
     import os as _os
     _os.makedirs(str(tmp_path / "bad"), exist_ok=True)
     with open(str(tmp_path / "bad" / _fc._TENANT_NAME_FILE), "w", encoding="utf-8") as _f:
         _f.write("not-json{{")
-    assert _fc.get_cached_tenant_name("tenant-Z", local_dir=str(tmp_path / "bad")) == ""
+    assert _fc.get_cached_tenant_name("00000000-0000-0000-0000-0000000000ab", local_dir=str(tmp_path / "bad")) == ""
     with open(str(tmp_path / "bad" / _fc._TENANT_NAME_FILE), "w", encoding="utf-8") as _f:
         _f.write("[1, 2, 3]")
-    assert _fc.get_cached_tenant_name("tenant-Z", local_dir=str(tmp_path / "bad")) == ""
+    assert _fc.get_cached_tenant_name("00000000-0000-0000-0000-0000000000ab", local_dir=str(tmp_path / "bad")) == ""
     # Empty inputs are no-ops (nothing cached, nothing returned).
     _fc.cache_tenant_name("", "Contoso", local_dir=d)
     _fc.cache_tenant_name("tenant-W", "", local_dir=d)
@@ -182,18 +321,18 @@ def test_cache_tenant_name_round_trip_and_guards(tmp_path):
 
 def test_explicit_instance_id_overrides_persisted(monkeypatch):
     monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
-    ident = adk.set_identity(tenant_id="tenant-Z", instance_id="explicit-2")
+    ident = adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000ab", instance_id="explicit-2")
     assert ident["instance_id"] == "explicit-2"
 
 
 def test_identity_flows_into_dimensions(monkeypatch):
     monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
-    adk.set_identity(tenant_id="tenant-Z", instance_id="inst-9")
+    adk.set_identity(tenant_id="00000000-0000-0000-0000-0000000000ab", instance_id="inst-9")
     dims = adk.common_dimensions(adk.SURFACE_CLI, session_id="sid-1")
     assert "developer_id" not in dims
     assert dims["instance_id"] == "inst-9"
     # tenant_id is emitted RAW (approved Data Profile: OII, no transformation).
-    assert dims["tenant_id"] == "tenant-Z"
+    assert dims["tenant_id"] == "00000000-0000-0000-0000-0000000000ab"
 
 
 # --- tenant_class (internal vs customer; ADO 7558661) ---------------------
@@ -223,6 +362,81 @@ def test_classify_tenant_env_allowlist_extends(monkeypatch):
     assert _fc.classify_tenant("11111111-1111-1111-1111-111111111111") == "customer"
 
 
+def test_classify_tenant_hardcoded_internal_dogfood_tenants(monkeypatch):
+    # Well-known internal dogfood/demo tenants (EmployeeHub + the two Contoso
+    # test tenancies surfaced by usage analysis) must classify as ``internal``
+    # even when the env-var allow-list is empty. Without this, the External
+    # dashboard silently attributes Microsoft-internal dogfooding to real
+    # customers — the exact issue that motivated PR #242's customer-attribution
+    # audit and this follow-up.
+    monkeypatch.delenv("ESS_ADK_INTERNAL_TENANTS", raising=False)
+    _fc._parse_internal_tenant_ids.cache_clear()
+    assert _fc.classify_tenant(_fc.EMPLOYEEHUB_TENANT_ID) == "internal"
+    assert _fc.classify_tenant(_fc.CONTOSO_INTERNAL_TENANT_ID) == "internal"
+    assert _fc.classify_tenant(_fc.CRONTOSO_INTERNAL_TENANT_ID) == "internal"
+    assert _fc.classify_tenant(_fc.COCREATE_TEST_TENANT_ID) == "internal"
+    # Case / whitespace insensitive on the new hardcoded entries too.
+    assert _fc.classify_tenant(f"  {_fc.CONTOSO_INTERNAL_TENANT_ID.upper()} ") == "internal"
+
+
+def test_classify_tenant_non_guid_maps_to_unknown():
+    # Defense-in-depth: a non-empty tenant_id that isn't a canonical Entra
+    # tenant GUID must NEVER classify as "customer" — otherwise the External
+    # dashboard silently absorbs fixture / placeholder / garbage values into
+    # the customer bucket (the exact regression that produced 391 fixture
+    # leak events in prod before the autouse conftest guard landed). This is
+    # a second safety net on top of _sanitize_tenant_id at set_identity
+    # ingress: even if a bad value bypasses the sanitizer (test that
+    # overrides ESS_ADK_TELEMETRY, hand-edited cache file, future caller
+    # that skips set_identity entirely), classify_tenant still labels it
+    # "unknown" so it's excluded from customer usage counts.
+    assert _fc.classify_tenant("tenant-id") == "unknown"       # fixture leak
+    assert _fc.classify_tenant("unknown") == "unknown"          # sentinel
+    assert _fc.classify_tenant("Contoso") == "unknown"          # display name
+    assert _fc.classify_tenant("11111111-1111-1111-1111-11111") == "unknown"  # short
+
+
+def test_guid_re_matches_adk_telemetry():
+    # adk_telemetry._GUID_RE and flightcheck.telemetry._GUID_RE must stay in
+    # lock-step (this module cannot import from adk_telemetry, so the regex
+    # is duplicated). A drift would let one entry point accept a value the
+    # other rejects.
+    assert adk._GUID_RE.pattern == _fc._GUID_RE.pattern
+
+
+def test_get_cached_tenant_id_rejects_non_guid_legacy_string(tmp_path):
+    # The legacy raw-string compatibility shim in get_cached_tenant_id must
+    # validate against _GUID_RE before returning — otherwise a torn /
+    # hand-edited / garbage .tenant_id file would ride onto real events.
+    d = tmp_path / "state"
+    d.mkdir()
+    (d / _fc._TENANT_ID_FILE).write_text("tenant-id", encoding="utf-8")
+    assert _fc.get_cached_tenant_id(local_dir=str(d)) == ""
+    # A canonical raw-string GUID (older ADK builds) is still honored.
+    (d / _fc._TENANT_ID_FILE).write_text(
+        "ABCDEF01-2345-6789-abcd-ef0123456789", encoding="utf-8"
+    )
+    assert (
+        _fc.get_cached_tenant_id(local_dir=str(d))
+        == "abcdef01-2345-6789-abcd-ef0123456789"
+    )
+
+
+def test_common_dimensions_sanitizes_explicit_tenant_id_kwarg(monkeypatch):
+    # Single choke point: EVERY tenant_id source (explicit kwarg included)
+    # is sanitized in common_dimensions, so an emit_* helper that forwards
+    # a caller-supplied non-GUID never lands in the customer bucket.
+    monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
+    dims = adk.common_dimensions(adk.SURFACE_CLI, tenant_id="tenant-id")
+    assert dims["tenant_id"] == ""
+    assert dims["tenant_class"] == _fc.TENANT_CLASS_UNKNOWN
+    # A well-formed GUID is preserved (and lowercased).
+    dims = adk.common_dimensions(
+        adk.SURFACE_CLI, tenant_id="ABCDEF01-2345-6789-abcd-ef0123456789"
+    )
+    assert dims["tenant_id"] == "abcdef01-2345-6789-abcd-ef0123456789"
+
+
 def test_tenant_class_flows_into_dimensions(monkeypatch):
     monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
     adk.set_identity(tenant_id=_fc.MICROSOFT_CORP_TENANT_ID, instance_id="inst-9")
@@ -246,13 +460,38 @@ def test_common_dimensions_shape():
     for key in (
         "schema_version", "instance_id", "tenant_id", "tenant_class",
         "tenant_name",
-        "session_id", "surface", "adk_version", "timestamp",
+        "session_id", "surface", "adk_version",
+        "toolkit_git_sha", "toolkit_git_branch",
+        "timestamp",
     ):
         assert key in dims
     assert dims["schema_version"] == adk.SCHEMA_VERSION
     assert dims["surface"] == "cli"
     assert dims["session_id"] == "sid-1"
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", dims["timestamp"])
+
+
+def test_common_dimensions_carries_toolkit_git_sha_and_branch(monkeypatch):
+    """toolkit_git_sha and toolkit_git_branch are precise upgrade-posture
+    signals — ADO #7943642. They must be present on every ADK event so
+    dashboards can distinguish "install is on latest bits" from "install
+    is on an older tree at the same extension version".
+    """
+    # The env overrides are the deterministic entry point used by CI and
+    # tests; the real git-walk code path is exercised in the FlightCheck
+    # test module against a fabricated .git dir.
+    monkeypatch.setenv("ESS_ADK_GIT_SHA", "abcdef0")
+    # Branch overrides now go through the bounded classifier — a
+    # personal-name override collapses to "other" so free-form values
+    # never appear in the emitted dimension.
+    monkeypatch.setenv("ESS_ADK_GIT_BRANCH", "amilandin/adk-telemetry-x")
+    _fc = __import__("flightcheck.telemetry", fromlist=["telemetry"])
+    _fc.get_toolkit_git_sha.cache_clear()
+    _fc.get_toolkit_git_branch.cache_clear()
+
+    dims = adk.common_dimensions(adk.SURFACE_CLI, session_id="sid-1")
+    assert dims["toolkit_git_sha"] == "abcdef0"
+    assert dims["toolkit_git_branch"] == "other"
 
 
 def test_build_event_is_common_schema_4_0():
@@ -314,13 +553,19 @@ def test_config_opt_out_persists():
     assert adk.telemetry_enabled() is True
 
 
-def test_notice_shown_once(capsys):
-    import io
-
-    first = adk.maybe_print_notice(stream=io.StringIO())  # writes, flags shown
-    assert first is True
-    second = adk.maybe_print_notice(stream=io.StringIO())
-    assert second is False
+def test_no_runtime_notice_symbol_exists():
+    # Per Privacy-review decision, disclosure lives in README / CONTRIBUTING.md;
+    # the SDK must never print a runtime banner. This test locks that in — if
+    # someone reintroduces ``maybe_print_notice`` or a ``NOTICE_TEXT`` constant,
+    # the test fails and the reviewer is forced to re-consult Privacy.
+    assert not hasattr(adk, "maybe_print_notice"), (
+        "maybe_print_notice was intentionally removed; re-check with Privacy "
+        "before adding a runtime disclosure banner."
+    )
+    assert not hasattr(adk, "NOTICE_TEXT"), (
+        "NOTICE_TEXT was intentionally removed; re-check with Privacy before "
+        "adding a runtime disclosure banner."
+    )
 
 
 def test_disabled_emit_does_not_post(monkeypatch, captured_post):
@@ -374,12 +619,12 @@ def test_resolve_ikey_env_and_raw_override(monkeypatch):
 # --- emit happy path + fail-open + buffering ------------------------------
 def test_emit_happy_path_posts_envelope(captured_post, monkeypatch):
     monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
-    res = adk.emit_capability_use("evaluations", block=True)
+    res = adk.emit_capability_use("evaluation_validate", block=True)
     assert res["sent"] is True
     assert len(captured_post) == 1
     _ikey, envelopes = captured_post[0]
     assert envelopes[0]["name"] == "adk.capability.use"
-    assert envelopes[0]["data"]["adk_capability"] == "evaluations"
+    assert envelopes[0]["data"]["adk_capability"] == "evaluation_validate"
     assert envelopes[0]["iKey"] == f"o:{DEV_TOKEN}"
 
 
@@ -451,6 +696,945 @@ def test_buffer_oversize_drops_oldest_and_accepts_newest(monkeypatch):
     assert "adk.evt.0" not in names   # oldest dropped
 
 
+# --- Vorpal client event bridge --------------------------------------------
+def test_report_client_events_accepts_and_posts_valid_batch(captured_post, monkeypatch):
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(_client_events_envelope(), block=True)
+
+    assert result == {"status": "accepted", "acceptedEventCount": 2}
+    assert len(captured_post) == 1
+    _ikey, envelopes = captured_post[0]
+    assert [envelope["name"] for envelope in envelopes] == [
+        "adk.client.event",
+        "adk.client.event",
+    ]
+    first = envelopes[0]["data"]
+    assert first["client_event_name"] == "WidgetReady"
+    assert first["client_batch_id"] == "batch-test"
+    assert first["client_mount_id"] == "mount-test"
+    assert first["client_tool_call_id"] == "tool-test"
+    assert first["client_app_name"] == "AgentIcon"
+    assert first["client_build_environment"] == "dev"
+    assert first["client_build_number"] == "0"
+    assert first["client_level"] == "info"
+    assert first["client_event_timestamp"] == "2026-09-11T23:21:26.196Z"
+    assert first["client_time_since_mount_ms"] == 12
+    assert first["client_sequence_number"] == 1
+    assert first["client_locale"] == "en-US"
+    assert json.loads(first["client_properties"]) == {
+        "count": 1,
+        "flag": True,
+        "label": "loaded",
+        "tags": ["a", 2, False, None],
+    }
+    assert first["client_prop_dropped_count"] == 0
+    # Property keys stay inside the JSON blob to keep the Aria field set fixed.
+    assert not any(key.startswith("client_prop_") and key != "client_prop_dropped_count" for key in first)
+    assert "developer_id" not in first
+
+
+def test_v2_optional_fields_are_projected_without_generic_scrubbing(captured_post, monkeypatch):
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+    operation_id = "6f7c8f9c-1234-4abc-9def-0123456789ab"
+    user_agent = "Mozilla/5.0 synthetic@example.test"
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            buildNumber="",
+            platform="Win32",
+            userAgent=user_agent,
+            events=[
+                {
+                    "eventName": "Save.Started",
+                    "level": "info",
+                    "eventTimestamp": "2026-09-11T23:21:26.198Z",
+                    "timeSinceMount": 12.25,
+                    "sequenceNumber": 42,
+                    "locale": "en-US",
+                    "displayMode": "inline",
+                    "themeName": "dark",
+                    "operationId": operation_id,
+                    "properties": {"operationId": operation_id},
+                }
+            ],
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 1}
+    data = captured_post[0][1][0]["data"]
+    assert data["client_build_number"] == ""
+    assert data["client_platform"] == "Win32"
+    assert data["client_user_agent"] == user_agent
+    assert data["client_event_timestamp"] == "2026-09-11T23:21:26.198Z"
+    assert data["client_time_since_mount_ms"] == 12.25
+    assert data["client_sequence_number"] == 42
+    assert data["client_display_mode"] == "inline"
+    assert data["client_theme_name"] == "dark"
+    assert data["client_operation_id"] == operation_id
+    assert json.loads(data["client_properties"]) == {"operationId": "<guid>"}
+
+
+def test_unavailable_v2_optional_fields_remain_absent(captured_post, monkeypatch):
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            toolCallId=None,
+            events=[
+                {
+                    "eventName": "WidgetReady",
+                    "level": "info",
+                    "eventTimestamp": "2026-09-11T23:21:26.196Z",
+                    "timeSinceMount": 0,
+                    "sequenceNumber": 1,
+                }
+            ],
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 1}
+    data = captured_post[0][1][0]["data"]
+    for field in (
+        "client_tool_call_id",
+        "client_platform",
+        "client_user_agent",
+        "client_locale",
+        "client_display_mode",
+        "client_theme_name",
+        "client_operation_id",
+    ):
+        assert field not in data
+
+
+def test_vorpal_owns_event_names_and_sequence_order(captured_post, monkeypatch):
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[
+                {
+                    "eventName": "WidgetReady",
+                    "level": "info",
+                    "eventTimestamp": "2026-09-11T23:21:26.216Z",
+                    "timeSinceMount": 20,
+                    "sequenceNumber": 100,
+                },
+                {
+                    "eventName": "Widget.Ready",
+                    "level": "info",
+                    "eventTimestamp": "2026-09-11T23:21:26.206Z",
+                    "timeSinceMount": 10,
+                    "sequenceNumber": 100,
+                },
+                {
+                    "eventName": "Future.Name.From.Vorpal",
+                    "level": "error",
+                    "eventTimestamp": "2026-09-11T23:21:26.201Z",
+                    "timeSinceMount": 5,
+                    "sequenceNumber": 4,
+                },
+            ],
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 3}
+    rows = [envelope["data"] for envelope in captured_post[0][1]]
+    assert [row["client_event_name"] for row in rows] == [
+        "WidgetReady",
+        "Widget.Ready",
+        "Future.Name.From.Vorpal",
+    ]
+    assert [row["client_sequence_number"] for row in rows] == [100, 100, 4]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sequenceNumber", 0),
+        ("sequenceNumber", -1),
+        ("sequenceNumber", 1.5),
+        ("sequenceNumber", True),
+        ("sequenceNumber", None),
+        ("themeName", "system"),
+        ("themeName", {}),
+        ("operationId", "6F7C8F9C-1234-4ABC-9DEF-0123456789AB"),
+        ("operationId", "not-a-guid"),
+    ],
+)
+def test_invalid_v2_occurrence_metadata_rejects_the_batch(field, value, captured_post):
+    event = {
+        "eventName": "InvalidMetadata",
+        "level": "info",
+        "eventTimestamp": "2026-09-11T23:21:26.196Z",
+        "timeSinceMount": 1,
+        "sequenceNumber": 1,
+    }
+    event[field] = value
+
+    result = adk.report_client_events(
+        _client_events_envelope(events=[event]),
+        block=True,
+    )
+
+    assert result["rejectedReason"] == "invalid_event_shape"
+    assert captured_post == []
+
+
+@pytest.mark.parametrize("field", ["platform", "userAgent", "buildNumber"])
+def test_raw_v2_strings_are_size_bounded_without_truncation(field, captured_post):
+    result = adk.report_client_events(
+        _client_events_envelope(
+            **{field: "x" * (adk.CLIENT_EVENTS_MAX_STRING_LENGTH + 1)}
+        ),
+        block=True,
+    )
+
+    assert result["rejectedReason"] == "invalid_event_shape"
+    assert captured_post == []
+
+
+def test_report_client_events_honors_opt_out_without_retrying(captured_post, monkeypatch):
+    monkeypatch.setenv("ESS_ADK_TELEMETRY", "off")
+
+    result = adk.report_client_events(_client_events_envelope(), block=True)
+
+    assert result == {"status": "accepted", "acceptedEventCount": 2}
+    assert captured_post == []
+
+
+def test_client_source_chronology_survives_buffer_reemission(monkeypatch):
+    operation_id = "6f7c8f9c-1234-4abc-9def-0123456789ab"
+    calls = []
+
+    def _failing_post(_ikey, _envelopes):
+        raise OSError("offline")
+
+    monkeypatch.setattr(_fc, "_post", _failing_post)
+    first = adk.report_client_events(
+        _client_events_envelope(
+            batchId="batch-retry",
+            events=[
+                {
+                    "eventName": "Save.Started",
+                    "level": "info",
+                    "eventTimestamp": "2026-09-11T23:21:26.198Z",
+                    "timeSinceMount": 12.25,
+                    "sequenceNumber": 42,
+                    "operationId": operation_id,
+                }
+            ],
+        ),
+        block=True,
+    )
+
+    assert first == {"status": "accepted", "acceptedEventCount": 1}
+
+    def _successful_post(_ikey, envelopes):
+        calls.append(envelopes)
+        return 200
+
+    monkeypatch.setattr(_fc, "_post", _successful_post)
+    second = adk.report_client_events(
+        _client_events_envelope(
+            batchId="batch-next",
+            events=[
+                {
+                    "eventName": "Save.Completed",
+                    "level": "info",
+                    "eventTimestamp": "2026-09-11T23:21:26.200Z",
+                    "timeSinceMount": 20,
+                    "sequenceNumber": 43,
+                    "operationId": operation_id,
+                }
+            ],
+        ),
+        block=True,
+    )
+
+    assert second == {"status": "accepted", "acceptedEventCount": 1}
+    replayed = calls[0][0]["data"]
+    assert replayed["client_batch_id"] == "batch-retry"
+    assert replayed["client_event_timestamp"] == "2026-09-11T23:21:26.198Z"
+    assert replayed["client_time_since_mount_ms"] == 12.25
+    assert replayed["client_sequence_number"] == 42
+    assert replayed["client_operation_id"] == operation_id
+
+
+@pytest.mark.parametrize("schema_version", [1, 2.0, True, "2", None])
+def test_report_client_events_rejects_unsupported_schema(schema_version, captured_post):
+    result = adk.report_client_events(
+        _client_events_envelope(schemaVersion=schema_version),
+        block=True,
+    )
+
+    assert result == {
+        "status": "rejected",
+        "acceptedEventCount": 0,
+        "rejectedReason": "unsupported_schema_version",
+    }
+    assert captured_post == []
+
+
+def test_report_client_events_rejects_empty_and_oversized_batches(captured_post):
+    empty = adk.report_client_events(_client_events_envelope(events=[]), block=True)
+    oversized = adk.report_client_events(
+        _client_events_envelope(
+            events=[
+                {"eventName": f"Event{i}", "timeSinceMount": i}
+                for i in range(adk.CLIENT_EVENTS_MAX_BATCH_EVENTS + 1)
+            ]
+        ),
+        block=True,
+    )
+
+    assert empty["rejectedReason"] == "empty_batch"
+    assert oversized["rejectedReason"] == "batch_too_large"
+    assert captured_post == []
+
+
+_IDENTIFIER_FIELDS = {
+    "batchId": "invalid_correlation_id",
+    "mountId": "invalid_mount_id",
+}
+
+
+@pytest.mark.parametrize("field", list(_IDENTIFIER_FIELDS))
+def test_each_identifier_field_reports_its_own_rejection_reason(field, captured_post):
+    """A rejection must name the field that actually failed.
+
+    The existing reason vocabulary distinguishes the batch identifier from
+    mount-id failures.
+    """
+    expected_reason = _IDENTIFIER_FIELDS[field]
+
+    # Exercise characters outside the accepted identifier format.
+    result = adk.report_client_events(
+        _client_events_envelope(**{field: "has spaces and @"}),
+        block=True,
+    )
+
+    assert result["rejectedReason"] == expected_reason
+    assert captured_post == []
+
+
+def test_identifier_rejection_reasons_are_distinct():
+    # Required stitching ids have distinct reasons; invalid optional tool-call
+    # ids are omitted without a rejection.
+    reasons = set(_IDENTIFIER_FIELDS.values())
+    assert len(reasons) == 2
+    assert reasons <= adk._CLIENT_EVENTS_REJECTED_REASONS
+
+
+def test_rejection_reasons_survive_the_bounded_value_list_guard():
+    # _rejection() coerces anything outside _CLIENT_EVENTS_REJECTED_REASONS to
+    # invalid_event_shape, so a new reason that was not registered there would
+    # be silently swallowed rather than reported.
+    assert (
+        adk._rejection(adk.CLIENT_EVENTS_REJECTED_INVALID_MOUNT_ID)["rejectedReason"]
+        == adk.CLIENT_EVENTS_REJECTED_INVALID_MOUNT_ID
+    )
+
+
+def test_retired_reasons_are_gone_from_the_value_list():
+    """Optional-field degradation has no batch-rejection reason.
+
+    Property faults drop properties and tool-call-id faults omit that field.
+    The rejection contract contains only conditions that reject a batch.
+    """
+    assert "invalid_property_type" not in adk._CLIENT_EVENTS_REJECTED_REASONS
+    assert "invalid_tool_call_id" not in adk._CLIENT_EVENTS_REJECTED_REASONS
+    assert not hasattr(adk, "CLIENT_EVENTS_REJECTED_INVALID_PROPERTY_TYPE")
+    assert not hasattr(adk, "CLIENT_EVENTS_REJECTED_INVALID_TOOL_CALL_ID")
+
+
+@pytest.mark.parametrize("field", list(_IDENTIFIER_FIELDS))
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "jdoe@contoso.com",
+        "C:\\Users\\jdoe\\secret.docx",
+        "https://contoso.sharepoint.com/x",
+        "6f7c8f9c-1234-4abc-9def-0123456789ab is the object id",
+        "a b c",  # a space is enough to turn the field into free text
+        "x" * 65,  # one over the single length bound
+    ],
+)
+def test_client_identifiers_are_not_a_free_text_tunnel(field, payload, captured_post):
+    """The ephemeral ids are emitted verbatim, so they must be identifier-shaped.
+
+    Validate the whole value against the bounded ASCII format. Required ids
+    retain their exact values because redaction would collapse distinct
+    mounts and break event stitching.
+    """
+    expected_reason = _IDENTIFIER_FIELDS[field]
+
+    result = adk.report_client_events(
+        _client_events_envelope(**{field: payload}),
+        block=True,
+    )
+
+    assert result["rejectedReason"] == expected_reason
+    assert captured_post == []
+
+
+def test_well_formed_client_identifiers_are_accepted(captured_post, monkeypatch):
+    # Accept generated UUID-style ids and permitted dot/underscore/dash characters.
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            batchId="batch-6f7c8f9c-1234-4abc-9def-0123456789ab",
+            mountId="mount-1a2b_3c.4d",
+            toolCallId="tool-Call.42",
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 2}
+    data = captured_post[0][1][0]["data"]
+    assert data["client_batch_id"] == "batch-6f7c8f9c-1234-4abc-9def-0123456789ab"
+    assert data["client_mount_id"] == "mount-1a2b_3c.4d"
+    assert data["client_tool_call_id"] == "tool-Call.42"
+
+
+def test_identifiers_without_the_legacy_prefixes_are_accepted(captured_post, monkeypatch):
+    """Field names identify each id's role independently of its prefix.
+
+    Bare UUIDs and ULIDs satisfying the bounded format allow producers to
+    select an id scheme independently of ADK releases.
+    """
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            batchId="6f7c8f9c-1234-4abc-9def-0123456789ab",
+            mountId="01JQZ8XKMNP7RSTVWXYZ",  # bare ULID-style, no prefix
+            toolCallId="call_abc.42",
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 2}
+    data = captured_post[0][1][0]["data"]
+    assert data["client_batch_id"] == "6f7c8f9c-1234-4abc-9def-0123456789ab"
+    assert data["client_tool_call_id"] == "call_abc.42"
+
+
+def test_identifier_length_bound_is_single_and_applies_to_the_whole_value():
+    # The identifier format bounds the entire value to 1-64 characters.
+    assert adk._valid_client_identifier("a" * 64) is True
+    assert adk._valid_client_identifier("a" * 65) is False
+    assert adk._valid_client_identifier("") is False
+    assert adk._valid_client_identifier(123) is False
+
+
+def test_free_text_event_names_are_scrubbed_not_rejected(captured_post, monkeypatch):
+    """Event names occupy a fixed column and are scrubbed as string values.
+
+    Accept Unicode and descriptive names while redacting matched sensitive
+    content through the shared scrubber.
+    """
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[
+                {"eventName": "Widget\U0001f600Ready", "timeSinceMount": 1},
+                {
+                    "eventName": "opened C:\\Users\\jdoe\\secret.docx for jdoe@contoso.com",
+                    "timeSinceMount": 2,
+                },
+            ]
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 2}
+    names = [envelope["data"]["client_event_name"] for envelope in captured_post[0][1]]
+    assert names[0] == "Widget\U0001f600Ready"
+    # Redact the path and email embedded in the event name.
+    assert names[1] == "opened <path> for <email>"
+
+
+def test_oversized_property_strings_are_truncated_not_rejected(captured_post, monkeypatch):
+    # Bound the emitted string while retaining its event.
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[
+                {
+                    "eventName": "BigProp",
+                    "timeSinceMount": 1,
+                    "properties": {"blob": "x" * (adk.CLIENT_EVENTS_MAX_STRING_LENGTH + 1)},
+                }
+            ]
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 1}
+    props = json.loads(captured_post[0][1][0]["data"]["client_properties"])
+    assert props["blob"] == "x" * adk.CLIENT_EVENTS_MAX_STRING_LENGTH
+
+
+def test_long_appname_and_locale_are_truncated_not_rejected(captured_post, monkeypatch):
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            appName="A" * 500,
+            events=[
+                {
+                    "eventName": "E",
+                    "timeSinceMount": 1,
+                    "locale": "L" * 500,
+                }
+            ],
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 1}
+    data = captured_post[0][1][0]["data"]
+    assert data["client_app_name"] == "A" * adk.CLIENT_EVENTS_MAX_STRING_LENGTH
+    assert data["client_locale"] == "L" * adk.CLIENT_EVENTS_MAX_STRING_LENGTH
+
+
+def test_many_properties_and_long_arrays_are_accepted(captured_post, monkeypatch):
+    # The serialized blob budget bounds property bags of varying cardinality.
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[
+                {
+                    "eventName": "Wide",
+                    "timeSinceMount": 1,
+                    "properties": {
+                        **{f"k{i}": i for i in range(40)},
+                        "tags": list(range(50)),
+                    },
+                }
+            ]
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 1}
+    props = json.loads(captured_post[0][1][0]["data"]["client_properties"])
+    assert len(props) == 41
+    assert props["tags"] == list(range(50))
+
+
+def test_non_identifier_property_keys_are_kept_but_length_bounded():
+    # Keys live inside a JSON string, so charset carries no schema risk.
+    # Only length is bounded, so one key cannot eat the blob budget.
+    blob, dropped = adk._client_properties_blob(
+        {
+            "bad-key": True,
+            "with space": 1,
+            "durationMs": 2,
+            "x" * (adk.CLIENT_EVENTS_MAX_PROPERTY_KEY_LENGTH + 1): "evicted",
+        }
+    )
+
+    assert json.loads(blob) == {"bad-key": True, "with space": 1, "durationMs": 2}
+    assert dropped == 1
+
+
+@pytest.mark.parametrize(
+    ("event", "reason"),
+    [
+        ({"eventName": "", "timeSinceMount": 1}, "invalid_event_shape"),
+        ({"eventName": 123, "timeSinceMount": 1}, "invalid_event_shape"),
+        ({"eventName": "BadLocale", "timeSinceMount": 1, "locale": 5}, "invalid_event_shape"),
+    ],
+)
+def test_report_client_events_rejects_out_of_contract_events(event, reason, captured_post):
+    result = adk.report_client_events(
+        _client_events_envelope(events=[event]),
+        block=True,
+    )
+
+    assert result["rejectedReason"] == reason
+    assert captured_post == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("eventTimestamp", 1_700_000_000_000),
+        ("eventTimestamp", ""),
+        ("eventTimestamp", "1700000000000"),
+        ("eventTimestamp", "2026-09-11T23:21:26.196"),
+        ("eventTimestamp", "not-a-timestamp"),
+        ("eventTimestamp", True),
+        ("timeSinceMount", float("nan")),
+        ("timeSinceMount", float("inf")),
+        ("timeSinceMount", -1),
+        ("timeSinceMount", "12"),
+        ("timeSinceMount", False),
+    ],
+)
+def test_invalid_source_timing_rejects_the_batch(field, value, captured_post):
+    event = {
+        "eventName": "InvalidTiming",
+        "level": "info",
+        "eventTimestamp": "2026-09-11T23:21:26.196Z",
+        "timeSinceMount": 0,
+        "sequenceNumber": 1,
+    }
+    event[field] = value
+
+    result = adk.report_client_events(
+        _client_events_envelope(events=[event]),
+        block=True,
+    )
+
+    assert result["rejectedReason"] == "invalid_event_shape"
+    assert captured_post == []
+
+
+def test_legacy_timing_fields_are_not_v2_aliases(captured_post):
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[
+                {
+                    "eventName": "LegacyTiming",
+                    "level": "info",
+                    "eventTimestampMs": 1_700_000_000_000,
+                    "sequenceNumber": 1,
+                    "timeSinceAppStart": 12,
+                    "timeSinceMount": None,
+                }
+            ]
+        ),
+        block=True,
+    )
+
+    assert result["rejectedReason"] == "invalid_event_shape"
+    assert captured_post == []
+
+
+def test_malformed_property_bag_costs_the_bag_not_the_event(captured_post, monkeypatch):
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[
+                {"eventName": "ListBag", "timeSinceMount": 1, "properties": ["not", "a", "dict"]},
+                {
+                    "eventName": "MixedBag",
+                    "timeSinceMount": 2,
+                    "properties": {"keep": "yes", "nested": {"a": 1}, "nan": float("inf")},
+                },
+            ]
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 2}
+    first, second = (e["data"] for e in captured_post[0][1])
+    assert json.loads(first["client_properties"]) == {}
+    # A dropped bag stays distinguishable from an event that had no properties.
+    assert first["client_prop_dropped_count"] == 1
+    assert json.loads(second["client_properties"]) == {"keep": "yes"}
+    assert second["client_prop_dropped_count"] == 2
+
+
+def test_bad_tool_call_id_omits_the_field_and_keeps_the_batch(captured_post, monkeypatch):
+    """An incompatible host-generated tool-call id is omitted.
+
+    Batch and mount ids provide required stitching metadata, so the
+    batch remains useful without the optional tool-call id.
+    """
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(toolCallId="tool/call:42"),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 2}
+    data = captured_post[0][1][0]["data"]
+    assert "client_tool_call_id" not in data
+    # The fields that DO stitch a mount together are still rejected, not omitted.
+    assert data["client_batch_id"] == "batch-test"
+
+
+def test_client_level_is_required_and_emitted(captured_post, monkeypatch):
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[
+                {"eventName": "E", "timeSinceMount": 1, "level": "error"},
+                {"eventName": "F", "timeSinceMount": 2, "level": "info"},
+            ]
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 2}
+    first, second = (e["data"] for e in captured_post[0][1])
+    assert first["client_level"] == "error"
+    assert second["client_level"] == "info"
+
+
+def test_unknown_envelope_fields_are_ignored_not_rejected(captured_post, monkeypatch):
+    """Direct SDK calls tolerate unknown envelope keys.
+
+    FastMCP's argument model drops extra top-level arguments on the tool path;
+    the SDK also ignores unknown keys when called directly.
+    """
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(rawPayload="ignored by the transport"),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 2}
+    # The unknown key is not carried onto the emitted rows either.
+    data = captured_post[0][1][0]["data"]
+    assert not any("rawPayload" in key for key in data)
+
+
+def test_unknown_event_fields_are_ignored_not_rejected(captured_post, monkeypatch):
+    """Optional event fields can be added independently of ADK releases.
+
+    Nested event keys reach the SDK unchanged. It reads known fields and
+    ignores extra metadata while emitting the supported event content.
+    """
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[
+                {
+                    "eventName": "WidgetReady",
+                    "timeSinceMount": 12,
+                    "someFutureField": "not yet known to ADK",
+                    "properties": {"stage": "loaded"},
+                }
+            ]
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 1}
+    # Only recognized event fields contribute to the emitted Aria columns.
+    data = captured_post[0][1][0]["data"]
+    assert not any("someFutureField" in key for key in data)
+    assert not any(value == "not yet known to ADK" for value in data.values())
+    assert data["client_event_name"] == "WidgetReady"
+    assert json.loads(data["client_properties"]) == {"stage": "loaded"}
+
+def test_report_client_events_scrubs_paths_urls_emails_and_guids(captured_post, monkeypatch):
+    # Bounded primitives still reach Aria verbatim unless they go through
+    # _scrub, so a widget property carrying a UPN/local path/object id would
+    # contradict the approved Data Profile ("no user-linkable IDs, no customer
+    # content"). Every string the bridge emits must be redacted.
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[
+                {
+                    "eventName": "WidgetReady",
+                    "timeSinceMount": 1,
+                    "properties": {
+                        "note": "C:\\Users\\jdoe\\secret.docx see https://contoso.sharepoint.com/x",
+                        "owner": "jdoe@contoso.com",
+                        "objectId": "6f7c8f9c-1234-4abc-9def-0123456789ab",
+                        "tags": ["a@b.com", "ok"],
+                        "count": 3,
+                    },
+                }
+            ]
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 1}
+    data = captured_post[0][1][0]["data"]
+    props = json.loads(data["client_properties"])
+    assert props["note"] == "<path> see <url>"
+    assert props["owner"] == "<email>"
+    assert props["objectId"] == "<guid>"
+    # Array elements are redacted too; non-strings pass through untouched.
+    assert props["tags"] == ["<email>", "ok"]
+    assert props["count"] == 3
+    # Keys are call-site literals and are never scrubbed — rewriting them would
+    # corrupt the field names analysts query inside the blob.
+    assert set(props) == {"note", "owner", "objectId", "tags", "count"}
+
+
+def test_properties_are_scrubbed_per_value_never_over_the_blob():
+    """Scrubbing the serialized blob would destroy it.
+
+    ``_scrub``'s ``(?<!\\w)/[^\\s]+`` -> ``<path>`` rule runs to the next
+    whitespace, and compact JSON has none. Applied to ``{"a":"/x","b":"y"}`` it
+    eats through the closing brace and leaves an unparseable document, taking
+    every property with it. Scrubbing each value first keeps the damage scoped
+    to the one field that actually carried a path.
+    """
+    blob, dropped = adk._client_properties_blob({"a": "/etc/passwd", "b": "y"})
+
+    assert json.loads(blob) == {"a": "<path>", "b": "y"}
+    assert dropped == 0
+    # The failure mode this guards against, made explicit.
+    assert adk._scrub('{"a":"/x","b":"y"}') != '{"a":"<path>","b":"y"}'
+
+
+def test_non_finite_numbers_are_filtered_before_serialization():
+    """``json.dumps`` emits bare ``NaN``/``Infinity``, which is not valid JSON.
+
+    Left in, they would make the entire blob unparseable by ``parse_json`` on
+    the KQL side, so a single bad number would cost every property on the event
+    rather than itself.
+    """
+    blob, dropped = adk._client_properties_blob(
+        {"good": 1.5, "nan": float("nan"), "inf": float("inf")}
+    )
+
+    assert json.loads(blob) == {"good": 1.5}
+    assert dropped == 2
+    assert "NaN" not in blob and "Infinity" not in blob
+
+
+def test_unserializable_property_values_are_dropped_individually():
+    blob, dropped = adk._client_properties_blob(
+        {"ok": "keep", "nested": {"a": 1}, "matrix": [[1, 2]], "obj": object()}
+    )
+
+    assert json.loads(blob) == {"ok": "keep"}
+    assert dropped == 3
+
+
+def test_oversized_properties_are_shed_until_the_blob_fits():
+    """Shed whole properties until the serialized bag fits its byte budget.
+
+    The largest properties are removed first, preserving a parseable JSON
+    object and accounting for every dropped property.
+    """
+    properties = {f"k{i}": "x" * 200 for i in range(60)}
+
+    blob, dropped = adk._client_properties_blob(properties)
+
+    assert len(blob.encode("utf-8")) <= adk.CLIENT_EVENTS_MAX_PROPERTIES_BYTES
+    survivors = json.loads(blob)  # still parseable, which truncation would not be
+    assert dropped > 0
+    assert len(survivors) == 60 - dropped
+    assert all(value == "x" * 200 for value in survivors.values())
+
+
+def test_missing_properties_still_emit_a_parseable_blob(captured_post, monkeypatch):
+    """The emitted field set must be fixed, or ``SCHEMA_VERSION`` means nothing."""
+    monkeypatch.setenv("ESS_ADK_ARIA_ENV", "dev")
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[{"eventName": "NoProps", "timeSinceMount": 1}]
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 1}
+    data = captured_post[0][1][0]["data"]
+    assert json.loads(data["client_properties"]) == {}
+    assert data["client_prop_dropped_count"] == 0
+
+
+def test_report_client_events_rejection_leaves_no_session_side_effect(captured_post):
+    # get_session() WRITES ~/.adk/session.json: it mints a fresh id once the
+    # inactivity window lapses and stamps `last` on every call. A batch that is
+    # ultimately rejected must not mutate ADK session state.
+    import os
+
+    assert not os.path.exists(adk.SESSION_PATH)
+
+    result = adk.report_client_events(
+        _client_events_envelope(batchId="not a valid id"),
+        block=True,
+    )
+
+    assert result["rejectedReason"] == "invalid_correlation_id"
+    assert not os.path.exists(adk.SESSION_PATH)
+    assert captured_post == []
+
+
+def test_report_client_events_fails_open_on_internal_fault(monkeypatch, captured_post):
+    # Vorpal reads a result without a `status` as a transient failure and
+    # retries the batch, so an internal ADK fault must never escape as an
+    # exception. It resolves to an acceptance for the WHOLE batch: Vorpal
+    # rejects an acknowledgement that doesn't account for every sent event.
+    def _boom(*args, **kwargs):
+        raise OSError("state dir gone")
+
+    monkeypatch.setattr(adk, "common_dimensions", _boom)
+
+    result = adk.report_client_events(_client_events_envelope(), block=True)
+
+    assert result == {"status": "accepted", "acceptedEventCount": 2}
+    assert captured_post == []
+
+
+def test_batch_cap_is_an_oom_guard_not_a_vorpal_contract():
+    """The out-of-memory guard leaves room for independent client batch sizing."""
+    assert adk.CLIENT_EVENTS_MAX_BATCH_EVENTS >= 1000
+
+
+def test_fail_open_echoes_the_full_sent_count(monkeypatch, captured_post):
+    """A fail-open acknowledgement echoes every event the caller sent.
+
+    Vorpal requires an acknowledgement to account for the whole batch so it
+    can finish handling every event without retrying.
+    """
+    def _boom(*_args, **_kwargs):
+        raise RecursionError("validator blew up")
+
+    monkeypatch.setattr(adk, "common_dimensions", _boom)
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[{"eventName": "E", "timeSinceMount": 1} for _ in range(20)]
+        ),
+        block=True,
+    )
+
+    assert result == {"status": "accepted", "acceptedEventCount": 20}
+    assert captured_post == []
+
+
+def test_oversized_batch_is_rejected_on_the_normal_path(captured_post):
+    # Accept a 100-event batch and reject a batch exceeding the safety cap.
+    ok = adk.report_client_events(
+        _client_events_envelope(
+            events=[{"eventName": "E", "timeSinceMount": 1} for _ in range(100)]
+        ),
+        block=True,
+    )
+    assert ok == {"status": "accepted", "acceptedEventCount": 100}
+
+    result = adk.report_client_events(
+        _client_events_envelope(
+            events=[
+                {"eventName": "E", "timeSinceMount": 1}
+                for _ in range(adk.CLIENT_EVENTS_MAX_BATCH_EVENTS + 1)
+            ]
+        ),
+        block=True,
+    )
+
+    assert result["rejectedReason"] == "batch_too_large"
+
+
 # --- capability taxonomy + normalization ----------------------------------
 def test_normalize_capability_known_values_pass_through():
     for cap in adk.ADK_CAPABILITIES:
@@ -508,18 +1692,125 @@ def test_wired_capabilities_are_in_canonical_list():
     "unknown" on the dashboards. This is the "keep in sync" contract."""
     wired = {
         # emit_capability_use(...) from the Python entry points
-        "setup", "evaluations",
+        "setup", "evaluation_validate",
         "backup_template_configs", "restore_template_configs",
-        # emit_build_*/flightcheck_* event families
-        "publishing", "flightcheck",
+        "push",
+        # emit_flightcheck_*() event family
+        "flightcheck",
         # emit_capability.py shim invocations across the SKILL.md skills
+        # (publish.py also invokes the shim with "publishing")
         "connect",
         "topic_create", "topic_update", "topic_delete",
+        "topic_review", "topic_test",
         "workflow_create", "workflow_update", "workflow_delete",
+        "workflow_test",
+        "evaluation_create", "evaluation_update", "evaluation_delete",
         "cleanup", "troubleshoot",
+        "publishing",
     }
     missing = wired - set(adk.ADK_CAPABILITIES)
     assert not missing, f"wired capabilities not in ADK_CAPABILITIES: {missing}"
+
+
+# --- reverse direction: every canonical capability must actually be emitted -
+def test_every_canonical_capability_is_actually_emitted():
+    """Reverse of ``test_wired_capabilities_are_in_canonical_list``: every
+    value declared in ``ADK_CAPABILITIES`` must be emitted somewhere in the
+    kit, so a dead value (added to the tuple but never wired to a real
+    skill or entry point) fails CI.
+
+    Scans ``solutions/ess-maker-skills/scripts`` and
+    ``solutions/ess-maker-skills/src/skills`` for these emit sites:
+
+      * shim usage in SKILL.md: ``python scripts/emit_capability.py <cap>``
+      * shim usage from Python subprocess: ``"emit_capability.py"), "<cap>"``
+      * direct Python call: ``emit_capability_use("<cap>"...``
+      * event-family kwarg: ``adk_capability="<cap>"`` (also matches the
+        default value on ``emit_flightcheck_*`` signatures)
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    repo_root = _Path(__file__).resolve().parent.parent
+    scripts_dir = repo_root / "solutions" / "ess-maker-skills" / "scripts"
+    skills_dir = repo_root / "solutions" / "ess-maker-skills" / "src" / "skills"
+
+    md_pat = _re.compile(r'emit_capability\.py\s+([A-Za-z_][A-Za-z0-9_\-]*)')
+    py_shim_pat = _re.compile(
+        r'"emit_capability\.py"\)?\s*,\s*\n?\s*["\']([A-Za-z_][A-Za-z0-9_\-]*)["\']'
+    )
+    use_pat = _re.compile(
+        r'emit_capability_use\(\s*["\']([A-Za-z_][A-Za-z0-9_\-]*)["\']'
+    )
+    kw_pat = _re.compile(
+        r'adk_capability\s*[:=]\s*(?:str\s*=\s*)?["\']([A-Za-z_][A-Za-z0-9_\-]*)["\']'
+    )
+
+    emitted: set[str] = set()
+    for path in scripts_dir.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for pat in (py_shim_pat, use_pat, kw_pat):
+            for m in pat.finditer(text):
+                emitted.add(m.group(1))
+    for path in skills_dir.rglob("SKILL.md"):
+        text = path.read_text(encoding="utf-8")
+        for m in md_pat.finditer(text):
+            emitted.add(m.group(1))
+
+    canonical = set(adk.ADK_CAPABILITIES)
+    dead = canonical - emitted
+    assert not dead, (
+        "Capabilities declared in ADK_CAPABILITIES but never emitted anywhere "
+        f"in the kit: {sorted(dead)}. Either wire them to a real skill / "
+        "entry point, or remove them from the canonical tuple."
+    )
+
+
+# --- guard: any string a caller passes to the shim must be canonical --------
+def test_no_caller_passes_a_noncanonical_capability_to_the_shim():
+    """Scan the repo for ``emit_capability.py <cap>`` invocations — both
+    Python subprocess calls (from ``scripts/*.py``) and SKILL.md steps — and
+    assert every capability argument is a member of ``ADK_CAPABILITIES``.
+
+    This is the guardrail the hardcoded ``wired`` set in the test above
+    doesn't provide: a fresh caller that hardcodes a typo (as ``publish.py``
+    did with ``"publish"`` vs the canonical ``"publishing"``) silently maps
+    to ``CAPABILITY_UNKNOWN`` on the dashboards. Scanning source directly
+    catches the typo the first time it lands, no manual list update needed.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    repo_root = _Path(__file__).resolve().parent.parent
+    scripts_dir = repo_root / "solutions" / "ess-maker-skills" / "scripts"
+    skills_dir = repo_root / "solutions" / "ess-maker-skills" / "src" / "skills"
+
+    # Python subprocess form:
+    #   subprocess.run([..., "emit_capability.py"), "<cap>"], ...)
+    # SKILL.md form:
+    #   python scripts/emit_capability.py <cap>
+    py_pat = _re.compile(r'"emit_capability\.py"\)\s*,\s*\n?\s*"([^"]+)"')
+    md_pat = _re.compile(r'emit_capability\.py\s+([A-Za-z_][A-Za-z0-9_\-]*)')
+
+    offenders: list[tuple[str, str]] = []
+    for path in scripts_dir.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for m in py_pat.finditer(text):
+            cap = m.group(1)
+            if cap not in adk.ADK_CAPABILITIES:
+                offenders.append((str(path.relative_to(repo_root)), cap))
+    for path in skills_dir.rglob("SKILL.md"):
+        text = path.read_text(encoding="utf-8")
+        for m in md_pat.finditer(text):
+            cap = m.group(1)
+            if cap not in adk.ADK_CAPABILITIES:
+                offenders.append((str(path.relative_to(repo_root)), cap))
+
+    assert not offenders, (
+        "Non-canonical capability strings passed to emit_capability.py — these "
+        "would silently normalize to CAPABILITY_UNKNOWN on the dashboards. "
+        f"Offenders (file, capability): {offenders}"
+    )
 
 
 
@@ -592,3 +1883,147 @@ def test_classify_deploy_target_unknown_or_empty_defaults_to_production():
 def test_classify_deploy_target_is_case_and_whitespace_insensitive():
     assert adk.classify_deploy_target("  sAnDbOx  ") == "sandbox"
     assert adk.classify_deploy_target(" PRODUCTION ") == "production"
+
+
+# --- subprocess-spawn regression (SKILL.md shim path) ---------------------
+def test_emit_capability_shim_subprocess_stamps_cached_tenant_id(tmp_path):
+    """A *fresh* subprocess launched by SKILL.md must stamp tenant_id.
+
+    Reproduces the regression that motivated PR #237: SKILL.md invokes
+    ``python scripts/emit_capability.py <cap>`` from the maker's shell — a
+    brand-new interpreter that never calls ``set_identity`` yet must still
+    emit ``adk.capability.use`` events carrying the maker's tenant_id so
+    they land on the customer-filtered dashboard. The on-disk
+    ``.local/.tenant_id`` cache written by an earlier ``set_identity`` call
+    (in the parent auth flow) is the only bridge across the process
+    boundary. If we ever regress the ``common_dimensions`` fallback (e.g.
+    someone re-adds a "tenant_id is None -> return ''" short-circuit),
+    this test catches it end-to-end without any monkeypatching of the
+    telemetry module.
+
+    Transport is intentionally broken by pointing ``HTTPS_PROXY`` at a dead
+    localhost port so the POST fails and the event lands in the on-disk
+    ``telemetry-buffer.ndjson`` where we can inspect ``.data.tenant_id``.
+    Sync mode keeps the emit on the calling thread — no daemon-thread race.
+    """
+    import os as _os
+    import subprocess as _sp
+
+    scripts_dir = _os.path.abspath(
+        _os.path.join(
+            _os.path.dirname(__file__),
+            "..",
+            "solutions",
+            "ess-maker-skills",
+            "scripts",
+        )
+    )
+    shim = _os.path.join(scripts_dir, "emit_capability.py")
+    assert _os.path.exists(shim), shim
+
+    # Parent flow: seed the on-disk tenant_id cache with a canonical GUID.
+    local_dir = tmp_path / ".local"
+    local_dir.mkdir()
+    (local_dir / _fc._TENANT_ID_FILE).write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "tenant_id": "00000000-0000-0000-0000-0000000000ab",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {
+        **_os.environ,
+        "USERPROFILE": str(home),
+        "HOME": str(home),
+        # Force POST to fail so the event is buffered to disk (where we
+        # can read it back).
+        "HTTPS_PROXY": "http://127.0.0.1:1",
+        "HTTP_PROXY": "http://127.0.0.1:1",
+        "ESS_ADK_TELEMETRY": "on",
+        "ESS_ADK_TELEMETRY_SYNC": "1",
+        "ESS_ADK_ARIA_ENV": "dev",
+    }
+    # Some CI hosts inject a NO_PROXY that would exempt the OneCollector
+    # endpoint from the fake proxy — drop it so HTTPS_PROXY actually applies.
+    env.pop("NO_PROXY", None)
+    env.pop("no_proxy", None)
+
+    result = _sp.run(
+        [__import__("sys").executable, shim, "setup"],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+    buf_path = home / ".adk" / "telemetry-buffer.ndjson"
+    assert buf_path.exists(), (
+        f"expected {buf_path} to be created by the shim; stdout={result.stdout!r}"
+        f" stderr={result.stderr!r}"
+    )
+    lines = [
+        line for line in buf_path.read_text(encoding="utf-8").splitlines() if line
+    ]
+    assert lines, "buffer file is empty"
+    ev = json.loads(lines[-1])
+    data = ev.get("data", {})
+    assert data.get("tenant_id") == "00000000-0000-0000-0000-0000000000ab", data
+    assert data.get("adk_capability") == "setup", data
+
+
+# --- tenant-id sanitization (test-fixture leak defense) --------------------
+# Historical bug: tests that monkey-patched ``auth.discover_tenant`` to return
+# the literal string ``"tenant-id"`` (or that let it fall through the auth
+# path with a similarly non-GUID value) shipped real ``adk.*`` events to the
+# prod Aria cube during CI/local runs. Those events classified as ``customer``
+# (since ``"tenant-id"`` is neither the Microsoft nor EmployeeHub GUID) and
+# polluted the ``backup_template_configs`` / ``restore_template_configs``
+# customer usage counts. The autouse ``_disable_adk_telemetry`` fixture in
+# ``tests/conftest.py`` is the primary defense (short-circuits at
+# ``telemetry_enabled()``); this sanitizer in ``set_identity`` is the second
+# layer so that even if a future test overrides that env var, a bad
+# ``tenant_id`` still can't reach the wire.
+def test_set_identity_normalizes_non_guid_tenant_id_to_empty(monkeypatch):
+    monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
+    ident = adk.set_identity(tenant_id="tenant-id")  # the historical leak value
+    assert ident["tenant_id"] == ""
+    # common_dimensions must NOT stamp a bad tenant on the event either.
+    dims = adk.common_dimensions(adk.SURFACE_CLI, session_id="sid-1")
+    assert dims["tenant_id"] == ""
+    # classify_tenant then labels the event as "unknown" (excluded from the
+    # customer bucket on the External dashboard).
+    assert _fc.classify_tenant(dims["tenant_id"]) == "unknown"
+
+
+def test_set_identity_accepts_canonical_guid_and_normalizes_case(monkeypatch):
+    monkeypatch.setattr(_fc, "get_instance_id", lambda: "install-guid-1")
+    # Mixed-case + surrounding whitespace round-trip to lowercase, dashes preserved.
+    ident = adk.set_identity(tenant_id="  ABCDEF01-2345-6789-ABCD-EF0123456789  ")
+    assert ident["tenant_id"] == "abcdef01-2345-6789-abcd-ef0123456789"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "tenant-id",                              # historical fixture leak
+        "unknown",                                # sentinel string
+        "abcdef01-2345-6789-abcd-ef012345678",    # 11-char trailing group (short)
+        "abcdef012345-6789-abcd-ef0123456789",    # dash in wrong offset
+        "gggggggg-gggg-gggg-gggg-gggggggggggg",   # non-hex
+        "Contoso",                                # display name accidentally routed here
+    ],
+)
+def test_sanitize_tenant_id_rejects_non_guid(bad):
+    assert adk._sanitize_tenant_id(bad) == ""
+
+
+def test_sanitize_tenant_id_preserves_empty():
+    assert adk._sanitize_tenant_id("") == ""
+    assert adk._sanitize_tenant_id("   ") == ""

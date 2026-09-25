@@ -66,6 +66,8 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -96,7 +98,9 @@ EVENT_CHECK = "ESSMakerKit.FlightCheck.Check"
 
 # Bump when the emitted field set changes so dashboards can version-gate.
 # 1.1: added derived ``tenantClass`` (internal vs customer) — ADO 7558661.
-TELEMETRY_SCHEMA_VERSION = "1.1"
+# 1.2: added ``toolkitGitSha`` + ``toolkitGitBranch`` for precise
+# upgrade-posture and CA-vs-DA attribution — ADO 7943642.
+TELEMETRY_SCHEMA_VERSION = "1.2"
 
 # Short, fail-open timeout (connect, read) seconds. Telemetry runs at the
 # very end of a FlightCheck; we never want it to hang the CLI.
@@ -111,15 +115,50 @@ _POST_TIMEOUT = (3.05, 5)
 # Aria cube, because 1DS RTA cubes map an event property straight to a
 # dimension and cannot derive one dimension's value from another.
 #
-# Seeded with the Microsoft corporate Entra tenant only. Additional internal /
-# dogfood tenants can be added WITHOUT a code change via the
-# ``ESS_ADK_INTERNAL_TENANTS`` env var (comma-separated GUIDs) — preferred over
-# growing a hard-coded list.
+# Seeded with the Microsoft corporate Entra tenant plus known internal
+# dogfood/demo tenants that we own. Additional internal / dogfood tenants
+# can be added WITHOUT a code change via the ``ESS_ADK_INTERNAL_TENANTS``
+# env var (comma-separated GUIDs) — preferred for one-off / short-lived
+# additions; the hard-coded list is for well-known, long-lived tenancies.
 MICROSOFT_CORP_TENANT_ID = "72f988bf-86f1-41af-91ab-2d7cd011db47"
+# EmployeeHub dogfood tenant (team-owned; see PR #242 / customer-attribution
+# analysis).
+EMPLOYEEHUB_TENANT_ID = "935884d7-bdee-469b-a461-fcc530a3ac83"
+# ESS internal demo/test tenants surfaced by usage analysis. tenant_name
+# lookup during the auth path resolves these to ``Contoso`` and
+# ``Crontoso, Inc`` respectively; both are internal test tenancies.
+CONTOSO_INTERNAL_TENANT_ID = "ed667978-98e2-41a3-ad41-bafc8f728f02"
+CRONTOSO_INTERNAL_TENANT_ID = "99f9fd00-6145-4c3e-b3ba-d4c7e59470d8"
+# Cocreate test tenancy (``TESTTEST_Cocreate_06302026`` /
+# ``devtestcocreate0630.onmicrosoft.com``); internal dev/test only.
+COCREATE_TEST_TENANT_ID = "8d36aacf-bbb3-4388-ac14-8844210f377b"
+
+# Well-known internal Microsoft tenancies. Kept as a module-level constant
+# so tests and analytics tooling can enumerate the same set.
+_HARDCODED_INTERNAL_TENANT_IDS: frozenset[str] = frozenset(
+    {
+        MICROSOFT_CORP_TENANT_ID,
+        EMPLOYEEHUB_TENANT_ID,
+        CONTOSO_INTERNAL_TENANT_ID,
+        CRONTOSO_INTERNAL_TENANT_ID,
+        COCREATE_TEST_TENANT_ID,
+    }
+)
 
 TENANT_CLASS_INTERNAL = "internal"
 TENANT_CLASS_CUSTOMER = "customer"
 TENANT_CLASS_UNKNOWN = "unknown"
+
+# Canonical Entra tenant GUID (8-4-4-4-12 lowercase hex). Used by
+# ``get_cached_tenant_id`` to validate the legacy raw-string cache format
+# so a torn / hand-edited / garbage ``.tenant_id`` file can never leak onto
+# real events. Duplicated from ``adk_telemetry._GUID_RE`` (this module
+# cannot import from adk_telemetry — the dependency direction goes the
+# other way); the two regexes are kept in lock-step by a regression test
+# in ``test_adk_telemetry.py``.
+_GUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 
 
 def _internal_tenant_ids() -> frozenset[str]:
@@ -137,7 +176,7 @@ def _internal_tenant_ids() -> frozenset[str]:
 @lru_cache(maxsize=8)
 def _parse_internal_tenant_ids(extra: str) -> frozenset[str]:
     """Parse the comma-separated allow-list, cached per distinct env value."""
-    ids = {MICROSOFT_CORP_TENANT_ID}
+    ids = set(_HARDCODED_INTERNAL_TENANT_IDS)
     ids.update(t.strip().lower() for t in extra.split(",") if t.strip())
     return frozenset(ids)
 
@@ -146,16 +185,33 @@ def classify_tenant(tenant_id: str) -> str:
     """Map a raw Entra tenant GUID to ``internal`` | ``customer`` | ``unknown``.
 
     Empty / missing tenant -> ``unknown`` (we never guess). A tenant in the
-    internal allow-list -> ``internal``; anything else is an external
-    ``customer``. Case/whitespace-insensitive.
+    internal allow-list -> ``internal``. Any well-formed non-internal Entra
+    tenant GUID -> ``customer``. Case/whitespace-insensitive.
+
+    Defense-in-depth: a non-empty ``tenant_id`` that is **not** a canonical
+    Entra tenant GUID (test-fixture placeholders like ``"tenant-id"``, org
+    display names accidentally routed here, truncated / garbage values that
+    escaped ``set_identity``'s sanitizer, hand-edited cache files) maps to
+    ``unknown`` rather than ``customer``. Without this guard the External
+    dashboard's ``tenant_class == "customer"`` filter would silently absorb
+    any such value into the customer bucket — the exact failure mode that
+    produced 391 fixture-leak events in prod before the autouse conftest
+    guard landed. Aligns with the guarantee ``adk_telemetry._sanitize_tenant_id``
+    already gives at the identity ingress layer, and the same _GUID_RE
+    validation ``get_cached_tenant_id`` applies to the on-disk cache.
+
+    The internal allow-list is checked BEFORE the GUID shape check so that
+    non-GUID strings added to ``ESS_ADK_INTERNAL_TENANTS`` (e.g. a
+    non-canonical CI marker) still classify as ``internal``.
     """
     if not tenant_id:
         return TENANT_CLASS_UNKNOWN
-    return (
-        TENANT_CLASS_INTERNAL
-        if str(tenant_id).strip().lower() in _internal_tenant_ids()
-        else TENANT_CLASS_CUSTOMER
-    )
+    v = str(tenant_id).strip().lower()
+    if v in _internal_tenant_ids():
+        return TENANT_CLASS_INTERNAL
+    if not _GUID_RE.match(v):
+        return TENANT_CLASS_UNKNOWN
+    return TENANT_CLASS_CUSTOMER
 
 
 def _env_disabled() -> bool:
@@ -257,7 +313,10 @@ _TENANT_NAME_FILE = ".tenant_name"
 
 
 def cache_tenant_name(
-    tenant_id: str, tenant_name: str, local_dir: str = ".local"
+    tenant_id: str,
+    tenant_name: str,
+    local_dir: str = ".local",
+    source: str = "organization",
 ) -> None:
     """Persist the resolved org display name for reuse by later ADK events.
 
@@ -266,16 +325,147 @@ def cache_tenant_name(
     ``(tenant_id, tenant_name)`` pair. ``tenant_name`` is OII (org display
     name); it is written under the gitignored ``.local/`` dir on the maker's
     own machine, mirroring how ``.instance_id`` is persisted.
+
+    ``source`` records where the name came from. ``"organization"`` means it
+    came from Graph's ``/organization`` endpoint — the authoritative source.
+    ``"me"`` means it came from ``/me?$select=companyName``, which is a
+    per-user attribute (some tenants leave it unset or use a different
+    display value than the org record). A cached ``"organization"`` entry
+    is never overwritten by an ``"me"`` entry for the same tenant, so a
+    single unlucky call can't downgrade the label the whole dashboard uses.
+    A same-tenant write with the *same or better* source (organization ≥ me)
+    always wins.
     """
     if not tenant_id or not tenant_name:
         return
     path = os.path.join(local_dir, _TENANT_NAME_FILE)
+    _rank = {"organization": 2, "me": 1}
+    new_rank = _rank.get(source, 0)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+        if (
+            isinstance(existing, dict)
+            and existing.get("tenant_id") == tenant_id
+            and _rank.get(existing.get("source", "organization"), 0) > new_rank
+        ):
+            return
+    except (OSError, ValueError):
+        pass
     try:
         os.makedirs(local_dir, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"tenant_id": tenant_id, "tenant_name": tenant_name}, f)
+        # Atomic write via tempfile + os.replace, matching cache_tenant_id.
+        # A concurrent reader (a sibling emit_capability.py subprocess spawned
+        # from a SKILL.md step) must never see a truncated file — otherwise
+        # the reader would fall back to a blank tenant_name for the whole
+        # session, undoing the very cache we're populating.
+        payload = {
+            "tenant_id": tenant_id,
+            "tenant_name": tenant_name,
+            "source": source,
+        }
+        fd, tmp = tempfile.mkstemp(prefix=".tenant_name.", dir=local_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
     except OSError:
         pass
+
+
+# Persisted raw tenant GUID so ADK events emitted from a *fresh Python
+# subprocess* (e.g. `python scripts/emit_capability.py <cap>` invoked from a
+# SKILL.md step) can still stamp the tenant_id — without this, the subprocess'
+# in-memory ``_IDENTITY["tenant_id"]`` is empty, ``classify_tenant("")`` returns
+# ``unknown``, and the event never lands on the External (``tenant_class ==
+# "customer"``) dashboard. Separate file from ``.tenant_name`` because tenant_id
+# is available before (and even without) any Graph tenant-name resolution.
+_TENANT_ID_FILE = ".tenant_id"
+
+
+def cache_tenant_id(tenant_id: str, local_dir: str = ".local") -> None:
+    """Persist the raw tenant GUID for reuse by later same-install processes.
+
+    Best-effort: any IO error is swallowed (telemetry must never break a
+    flow). No-op when ``tenant_id`` is empty — we never persist a placeholder.
+    The value is written under the gitignored ``.local/`` dir on the maker's
+    own machine, mirroring how ``.instance_id`` is persisted. Overwrites any
+    prior value so a maker who switches tenants sees the latest one.
+
+    Write is atomic (``tempfile`` + ``os.replace``) so a concurrent reader
+    can never observe a truncated / half-written file — otherwise the reader
+    would silently see ``""`` and stamp the event as anonymous. Stored as
+    versioned JSON so a torn / legacy write from an older ADK build is
+    recognizable and discarded on read.
+    """
+    if not tenant_id:
+        return
+    path = os.path.join(local_dir, _TENANT_ID_FILE)
+    payload = {"version": 1, "tenant_id": str(tenant_id).strip()}
+    try:
+        os.makedirs(local_dir, exist_ok=True)
+        # tempfile.NamedTemporaryFile with delete=False so we can rename it in
+        # place with os.replace, which is atomic on POSIX AND Windows.
+        fd, tmp = tempfile.mkstemp(prefix=".tenant_id.", dir=local_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def get_cached_tenant_id(local_dir: str = ".local") -> str:
+    """Return the persisted tenant GUID, or ``""`` if unavailable/unreadable.
+
+    Reads the versioned JSON produced by ``cache_tenant_id`` and validates
+    the schema before returning the value. A missing / malformed / wrong-
+    schema-version file returns ``""`` — the caller's fallback path treats
+    that as "no cache" and either uses the in-memory identity or lets
+    ``classify_tenant`` label the event ``"unknown"``. That is safer than
+    returning a torn / legacy raw string that would silently ride onto
+    real events.
+
+    A very small compatibility shim recognizes the pre-versioning raw-string
+    format (a single line whose contents look like a canonical GUID) so a
+    maker who upgrades mid-session doesn't lose their cached tenant. The
+    raw string is validated against ``_GUID_RE`` (case-insensitive) before
+    being returned; any other content (truncated GUID, non-hex, garbage,
+    JSON at a future schema version) is discarded.
+    """
+    path = os.path.join(local_dir, _TENANT_ID_FILE)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+    except OSError:
+        return ""
+    if not raw:
+        return ""
+    if raw.startswith("{"):
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            return ""
+        if not isinstance(obj, dict) or obj.get("version") != 1:
+            return ""
+        return str(obj.get("tenant_id", "")).strip()
+    # Legacy raw-string format from pre-versioned ADK builds: only trust the
+    # value when it matches the canonical GUID shape. Otherwise return ""
+    # and let the caller's fallback path (or classify_tenant) treat it as
+    # unknown — never leak a torn / hand-edited / garbage cache onto real
+    # events. Matches the docstring guarantee above.
+    v = raw.lower()
+    return v if _GUID_RE.match(v) else ""
 
 
 def get_cached_tenant_name(tenant_id: str, local_dir: str = ".local") -> str:
@@ -326,6 +516,228 @@ def get_adk_version() -> str:
             break
         cur = parent
     return "unknown"
+
+
+def _find_git_dir() -> str:
+    """Walk up from this file until a ``.git`` directory (or file) is
+    found. Returns the absolute path of the ``.git`` entry, or ``""`` if
+    no repo is found within a safe walk depth.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    cur = here
+    for _ in range(10):
+        candidate = os.path.join(cur, ".git")
+        if os.path.exists(candidate):
+            return candidate
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return ""
+
+
+# Bounded set of branch classifications emitted as toolkit_git_branch.
+# Anything outside this set (personal branches, fork names, customer
+# labels, aliases) collapses to "other" to avoid leaking free-form
+# identifiers per the privacy contract documented in CONTRIBUTING.md and
+# solutions/ess-maker-skills/README.md. Extend this set only after a
+# privacy review approves the new value(s).
+_ALLOWED_BRANCHES = frozenset({"main", "main-ca"})
+
+
+def _classify_branch(branch: str) -> str:
+    """Collapse an arbitrary branch string to one of the allowed values.
+
+    Returns one of: ``main``, ``main-ca``, ``detached``, ``other``,
+    ``unknown``. All personal / fork / topic branch names collapse to
+    ``other`` so branch names never appear in telemetry.
+    """
+    if not branch:
+        return "unknown"
+    if branch == "detached" or branch == "unknown":
+        return branch
+    if branch in _ALLOWED_BRANCHES:
+        return branch
+    return "other"
+
+
+def _is_short_sha(value: str) -> bool:
+    """True if ``value`` looks like a hex commit ID (>=7 chars, all hex)."""
+    if not value or len(value) < 7 or len(value) > 40:
+        return False
+    return all(c in "0123456789abcdef" for c in value)
+
+
+def _resolve_git_dirs(git_dir: str) -> tuple[str, str]:
+    """Return ``(gitdir, commondir)`` for a ``.git`` entry.
+
+    ``gitdir`` is the per-worktree administrative directory (holds
+    ``HEAD``); ``commondir`` is the shared directory that holds
+    ``refs/`` and ``packed-refs`` for real linked worktrees. For a
+    plain non-worktree checkout the two are identical.
+
+    Returns ``("", "")`` on any error so callers fail open.
+    """
+    try:
+        # ``.git`` may be a file for worktrees / submodules pointing at
+        # the real per-worktree gitdir via ``gitdir: <path>``.
+        if os.path.isfile(git_dir):
+            with open(git_dir, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+            prefix = "gitdir:"
+            if not content.startswith(prefix):
+                return ("", "")
+            real = content[len(prefix):].strip()
+            if not os.path.isabs(real):
+                real = os.path.normpath(
+                    os.path.join(os.path.dirname(git_dir), real)
+                )
+            git_dir = real
+        # Linked worktrees drop a ``commondir`` file in the per-worktree
+        # gitdir pointing at the shared administrative directory (which
+        # holds refs/ and packed-refs). Plain checkouts have no
+        # ``commondir`` file, so gitdir IS commondir.
+        commondir = git_dir
+        commondir_file = os.path.join(git_dir, "commondir")
+        if os.path.exists(commondir_file):
+            with open(commondir_file, "r", encoding="utf-8") as f:
+                rel = f.read().strip()
+            if rel:
+                if not os.path.isabs(rel):
+                    rel = os.path.normpath(os.path.join(git_dir, rel))
+                commondir = rel
+        return (git_dir, commondir)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return ("", "")
+
+
+@lru_cache(maxsize=1)
+def get_toolkit_git_sha() -> str:
+    """Best-effort short git SHA of the ADK clone (System Metadata).
+
+    Precise upgrade-posture signal: ``adk_version`` (extension package.json
+    version) can lag the actual toolkit state — for example a hotfix on the
+    same extension version, or an install that was cloned before the version
+    bump landed. The short SHA lets dashboards distinguish "install is on
+    latest bits" from "install is on last-week's tree at the same version".
+
+    Order: ``ESS_ADK_GIT_SHA`` env override (used by CI to inject a known
+    build SHA) -> ``.git/HEAD`` + ref file read (no subprocess) -> ``"unknown"``.
+
+    Overrides go through the same canonicalization as repo-derived values
+    (lowercased, validated hex, truncated to 7 chars) so an env-injected
+    build SHA doesn't create a distinct telemetry bucket from the same
+    commit resolved via ``.git``.
+
+    Fail-open: any error (missing repo, malformed HEAD, unreadable file)
+    resolves to ``"unknown"`` so telemetry never blocks the CLI.
+    """
+    override = os.environ.get("ESS_ADK_GIT_SHA", "").strip().lower()
+    if override:
+        # Apply the same validation as repo-derived values so an
+        # env-injected build SHA and a git-resolved SHA land in the
+        # same telemetry bucket for the same commit.
+        return override[:7] if _is_short_sha(override) else "unknown"
+    git_dir = _find_git_dir()
+    if not git_dir:
+        return "unknown"
+    gitdir, commondir = _resolve_git_dirs(git_dir)
+    if not gitdir:
+        return "unknown"
+    try:
+        # HEAD is per-worktree — read it from gitdir. Refs and packed-refs
+        # live in the common directory for real linked worktrees, so read
+        # them from commondir.
+        head_path = os.path.join(gitdir, "HEAD")
+        if not os.path.exists(head_path):
+            return "unknown"
+        with open(head_path, "r", encoding="utf-8") as f:
+            head = f.read().strip()
+        if head.startswith("ref:"):
+            ref = head.split(":", 1)[1].strip()
+            # Resolve the ref file in the common directory; fall back to
+            # packed-refs if unpacked.
+            ref_path = os.path.join(commondir, ref)
+            if os.path.exists(ref_path):
+                with open(ref_path, "r", encoding="utf-8") as f:
+                    sha = f.read().strip()
+            else:
+                packed = os.path.join(commondir, "packed-refs")
+                if not os.path.exists(packed):
+                    return "unknown"
+                sha = ""
+                with open(packed, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.endswith(" " + ref):
+                            sha = line.split(" ", 1)[0].strip()
+                            break
+                if not sha:
+                    return "unknown"
+        else:
+            # Detached HEAD: HEAD contains the SHA directly.
+            sha = head
+        sha = sha.lower()
+        if not _is_short_sha(sha):
+            return "unknown"
+        return sha[:7]
+    except (OSError, ValueError, UnicodeDecodeError):
+        return "unknown"
+
+
+@lru_cache(maxsize=1)
+def get_toolkit_git_branch() -> str:
+    """Best-effort git branch classification of the ADK clone (System Metadata).
+
+    Returns one of a **bounded** set of strings so raw branch names —
+    which can carry aliases, personal names, customer labels, or other
+    free-form content — are never emitted:
+
+    * ``"main"``      — on the shipping DA branch (or an override says so)
+    * ``"main-ca"``   — on the shipping CA branch (used by ADO #7830949
+      for CA vs DA attribution)
+    * ``"detached"``  — HEAD points directly at a commit (no branch),
+      confirmed by a valid hex commit ID in HEAD
+    * ``"other"``     — on some other branch (topic / fork / customer
+      label); collapsed to a single bucket for privacy
+    * ``"unknown"``   — no repo, malformed HEAD, or any error
+
+    Order: ``ESS_ADK_GIT_BRANCH`` env override (also classified against
+    the bounded set) -> ``.git/HEAD`` ref parse -> ``"unknown"``.
+
+    Fail-open: any error resolves to ``"unknown"``.
+    """
+    override = os.environ.get("ESS_ADK_GIT_BRANCH", "").strip()
+    if override:
+        return _classify_branch(override)
+    git_dir = _find_git_dir()
+    if not git_dir:
+        return "unknown"
+    gitdir, _commondir = _resolve_git_dirs(git_dir)
+    if not gitdir:
+        return "unknown"
+    try:
+        head_path = os.path.join(gitdir, "HEAD")
+        if not os.path.exists(head_path):
+            return "unknown"
+        with open(head_path, "r", encoding="utf-8") as f:
+            head = f.read().strip()
+        if head.startswith("ref:"):
+            ref = head.split(":", 1)[1].strip()
+            # ``refs/heads/<branch>`` -> ``<branch>``. Anything else
+            # (tag ref, remote-tracking) falls through to unknown.
+            prefix = "refs/heads/"
+            if ref.startswith(prefix):
+                return _classify_branch(ref[len(prefix):])
+            return "unknown"
+        # No ``ref:`` prefix: HEAD contains a commit ID directly, IFF it
+        # actually parses as one. A malformed HEAD (empty, garbage,
+        # partial write) shouldn't masquerade as "detached HEAD" — that
+        # would emit ``branch=detached`` alongside ``sha=unknown``, which
+        # is a lie about the checkout state.
+        return "detached" if _is_short_sha(head.lower()) else "unknown"
+    except (OSError, ValueError, UnicodeDecodeError):
+        return "unknown"
 
 
 def _build_event(name: str, ikey_envelope: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -429,6 +841,8 @@ def _run_data(
         "agentId": agent_id,         # OII
         "agentCount": agent_count,
         "adkVersion": get_adk_version(),
+        "toolkitGitSha": get_toolkit_git_sha(),
+        "toolkitGitBranch": get_toolkit_git_branch(),
         "scope": scope,
         "invocationSource": invocation_source,
         "overall": getattr(run_result, "overall", ""),
@@ -590,6 +1004,8 @@ def selftest() -> int:
             "runId": str(uuid.uuid4()),
             "instanceId": get_instance_id(),
             "adkVersion": get_adk_version(),
+            "toolkitGitSha": get_toolkit_git_sha(),
+            "toolkitGitBranch": get_toolkit_git_branch(),
         },
     )
     print(f"Posting selftest event to env='{env}' "

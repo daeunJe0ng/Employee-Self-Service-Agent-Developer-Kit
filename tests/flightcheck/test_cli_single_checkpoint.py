@@ -25,6 +25,7 @@ Contracts pinned:
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,9 @@ def _args(
     checkpoint: str,
     tmp_path: Path,
     environment_url: str | None = None,
+    environment_id: str | None = None,
+    connect_config: str | None = None,
+    agent_slug: str | None = None,
     no_telemetry: bool = True,
     invocation_source: str | None = None,
     quiet_auth: bool = False,
@@ -44,7 +48,9 @@ def _args(
     return argparse.Namespace(
         checkpoint=checkpoint,
         environment_url=environment_url,
-        environment_id=None,
+        environment_id=environment_id,
+        connect_config=connect_config,
+        agent_slug=agent_slug,
         output=str(tmp_path / "out"),
         no_telemetry=no_telemetry,
         invocation_source=invocation_source,
@@ -73,6 +79,159 @@ def _silence_output(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestGates:
+    def test_connect_config_overlay_preserves_foundation_identity(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text(
+            '{"entraAppId":"app-123","tenant":"acme","status":"in-progress"}',
+            encoding="utf-8",
+        )
+
+        merged = cli._merge_connect_config(
+            {
+                "dataverseEndpoint": "https://example.crm.dynamics.com",
+                "agent": {"slug": "ess-hr"},
+                "status": "complete",
+            },
+            str(overlay),
+        )
+
+        assert merged["dataverseEndpoint"] == "https://example.crm.dynamics.com"
+        assert merged["agent"] == {"slug": "ess-hr"}
+        assert merged["entraAppId"] == "app-123"
+        assert merged["tenant"] == "acme"
+        assert merged["status"] == "complete"
+        assert merged["_connectConfigPath"] == str(overlay)
+
+    def test_connect_config_overlay_preserves_foundation_connections(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text(
+            '{"connections":{"Workday":{"tenant":"wrong"}}}',
+            encoding="utf-8",
+        )
+
+        merged = cli._merge_connect_config(
+            {"connections": {"Workday": {"tenant": "foundation"}}},
+            str(overlay),
+        )
+
+        assert merged["connections"]["Workday"]["tenant"] == "foundation"
+
+    def test_connect_config_only_merges_provider_owned_fields(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text(
+            json.dumps({
+                "tenant": "provider-tenant",
+                "releaseLine": "legacy",
+                "powerPlatformApiEndpoint": "https://wrong.example",
+                "workdayProbe": {"url": "https://wrong.example"},
+            }),
+            encoding="utf-8",
+        )
+
+        merged = cli._merge_connect_config(
+            {
+                "releaseLine": "da",
+                "powerPlatformApiEndpoint": "https://api.powerplatform.com",
+                "workdayProbe": {"url": "https://foundation.example"},
+            },
+            str(overlay),
+        )
+
+        assert merged["tenant"] == "provider-tenant"
+        assert merged["releaseLine"] == "da"
+        assert (
+            merged["powerPlatformApiEndpoint"]
+            == "https://api.powerplatform.com"
+        )
+        assert merged["workdayProbe"] == {
+            "url": "https://foundation.example"
+        }
+
+    @pytest.mark.parametrize(
+        "agent_slug",
+            (
+                ".",
+                "..",
+                "../other-agent",
+                r"..\other-agent",
+                "/tmp/agent",
+                "C:other-agent",
+                "other agent",
+            ),
+    )
+    def test_single_checkpoint_rejects_unsafe_explicit_agent_slug(
+        self,
+        tmp_path: Path,
+        agent_slug: str,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with pytest.raises(SystemExit) as exc:
+            cli._run_single_checkpoint(
+                _args("FAKE-001", tmp_path, agent_slug=agent_slug)
+            )
+
+        assert exc.value.code == 2
+        assert "ERROR: Invalid --agent-slug:" in capsys.readouterr().out
+
+    def test_connect_config_supplies_sidecar_dataverse(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text(
+            '{"sidecarDataverseEndpoint":'
+            '"https://sidecar.crm.dynamics.com"}',
+            encoding="utf-8",
+        )
+
+        merged = cli._merge_connect_config(
+            {"powerPlatformApiEndpoint": "https://api.powerplatform.com"},
+            str(overlay),
+        )
+
+        assert (
+            merged["dataverseEndpoint"]
+            == "https://sidecar.crm.dynamics.com"
+        )
+        assert (
+            merged["powerPlatformApiEndpoint"]
+            == "https://api.powerplatform.com"
+        )
+
+    def test_foundation_dataverse_wins_over_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text(
+            '{"sidecarDataverseEndpoint":'
+            '"https://sidecar.crm.dynamics.com"}',
+            encoding="utf-8",
+        )
+
+        merged = cli._merge_connect_config(
+            {"dataverseEndpoint": "https://foundation.crm.dynamics.com"},
+            str(overlay),
+        )
+
+        assert (
+            merged["dataverseEndpoint"]
+            == "https://foundation.crm.dynamics.com"
+        )
+
+    def test_connect_config_overlay_rejects_non_object(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = tmp_path / "invalid.json"
+        overlay.write_text('["not", "an", "object"]', encoding="utf-8")
+
+        with pytest.raises(ValueError, match="must contain a JSON object"):
+            cli._merge_connect_config({}, str(overlay))
+
     def test_environment_checkpoints_accept_explicit_foundation_context(
         self,
     ) -> None:
@@ -80,11 +239,14 @@ class TestGates:
             "ENV-001",
             "ENV-002",
             "ENV-009",
-            "ENV-CAPACITY-001",
         ):
             plan = registry.transitive_requirements(checkpoint)
             assert plan.requires_config is False
             assert plan.requires_dataverse_endpoint is True
+
+        capacity = registry.transitive_requirements("ENV-CAPACITY-001")
+        assert capacity.requires_config is False
+        assert capacity.requires_dataverse_endpoint is False
 
     def test_unknown_checkpoint_exits_2(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -125,6 +287,87 @@ class TestGates:
         with pytest.raises(SystemExit) as exc:
             cli._run_single_checkpoint(_args("ESS-SOLN-001", tmp_path))
         assert exc.value.code == 1
+
+    def test_capacity_uses_explicit_environment_id_without_dataverse(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        _silence_output: None,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        class _PowerPlatform:
+            def __init__(self, tenant_id: str) -> None:
+                assert tenant_id == "organizations"
+
+            def authenticate(self) -> str:
+                return "token"
+
+            def get_currency_allocations(self, environment_id: str):
+                assert (
+                    environment_id
+                    == "00000000-0000-4000-8000-000000001111"
+                )
+                return [{"currencyType": "MCSMessages", "allocated": 100}]
+
+        monkeypatch.setattr(cli, "PowerPlatformClient", _PowerPlatform)
+
+        with pytest.raises(SystemExit) as exc:
+            cli._run_single_checkpoint(
+                _args(
+                    "ENV-CAPACITY-001",
+                    tmp_path,
+                    environment_id=(
+                        "00000000-0000-4000-8000-000000001111"
+                    ),
+                )
+            )
+
+        assert exc.value.code == 0
+
+    def test_capacity_uses_native_config_environment_id_without_dataverse(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        _silence_output: None,
+    ) -> None:
+        local_dir = tmp_path / ".local"
+        local_dir.mkdir()
+        (local_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "releaseLine": "da",
+                    "environmentId": (
+                        "00000000-0000-4000-8000-000000001111"
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        class _PowerPlatform:
+            def __init__(self, tenant_id: str) -> None:
+                assert tenant_id == "organizations"
+
+            def authenticate(self) -> str:
+                return "token"
+
+            def get_currency_allocations(self, environment_id: str):
+                assert (
+                    environment_id
+                    == "00000000-0000-4000-8000-000000001111"
+                )
+                return [{"currencyType": "MCSMessages", "allocated": 100}]
+
+        monkeypatch.setattr(cli, "PowerPlatformClient", _PowerPlatform)
+
+        with pytest.raises(SystemExit) as exc:
+            cli._run_single_checkpoint(
+                _args("ENV-CAPACITY-001", tmp_path)
+            )
+
+        assert exc.value.code == 0
 
 
 class TestHermeticRun:
@@ -167,6 +410,55 @@ class TestHermeticRun:
         with pytest.raises(SystemExit) as exc:
             cli._run_single_checkpoint(_args("FAKE-001", tmp_path))
         assert exc.value.code == 0
+
+    def test_assigns_explicit_agent_slug_and_connect_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        _silence_output: None,
+    ) -> None:
+        overlay = tmp_path / "provider.json"
+        overlay.write_text('{"tenant":"acme"}', encoding="utf-8")
+        captured = {}
+
+        class _Spec:
+            category_label = "Fake"
+            is_family = False
+
+        class _Plan:
+            clients = frozenset()
+            requires_config = False
+            requires_dataverse_endpoint = False
+
+            def __init__(self) -> None:
+                self.ordered_fns = [("Fake", self._fn)]
+
+            @staticmethod
+            def _fn(runner):
+                captured["agent_slug"] = runner.agent_slug
+                captured["config"] = runner.config
+                return [_row("FAKE-001", Status.PASSED.value)]
+
+        monkeypatch.setattr(registry, "resolve", lambda target: _Spec())
+        monkeypatch.setattr(
+            registry, "transitive_requirements", lambda target: _Plan()
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(SystemExit) as exc:
+            cli._run_single_checkpoint(
+                _args(
+                    "FAKE-001",
+                    tmp_path,
+                    connect_config=str(overlay),
+                    agent_slug="active-agent",
+                )
+            )
+
+        assert exc.value.code == 0
+        assert captured["agent_slug"] == "active-agent"
+        assert captured["config"]["tenant"] == "acme"
+        assert captured["config"]["_connectConfigPath"] == str(overlay)
 
     def test_failed_row_exits_1(
         self,
@@ -315,3 +607,82 @@ class TestCheckpointTelemetry:
                 _args("FAKE-001", tmp_path, no_telemetry=True)
             )
         assert captured["called"] is False
+
+    def test_tenant_name_falls_back_to_cache_when_graph_unavailable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        _silence_output: None,
+    ) -> None:
+        """When ``graph is None`` (infra-only scope, or Graph auth failed),
+        ``cli`` must fall back to the persisted ``.local/.tenant_name`` cache
+        so previously-resolved tenants keep their name on FlightCheck events
+        instead of emitting blank. Regression guard for the split observed in
+        prod telemetry where the same tenant emitted both blank and named
+        runs on the same ADK version.
+        """
+        monkeypatch.chdir(tmp_path)
+        from flightcheck import telemetry as _tele_mod
+        from flightcheck import registry as _reg
+
+        cached_tid = "11111111-1111-1111-1111-111111111111"
+        _tele_mod.cache_tenant_name(cached_tid, "Contoso Cached")
+
+        # Make the plan require GRAPH so the code reaches the tenant_id
+        # discovery path and then tries to build a Graph client.
+        class _Spec:
+            category_label = "Fake"
+            is_family = False
+
+        class _Plan:
+            clients = frozenset({_reg.GRAPH})
+            requires_config = False
+            requires_dataverse_endpoint = False
+
+            def __init__(self, fns: list) -> None:
+                self.ordered_fns = fns
+
+        def _fn(runner):  # noqa: ARG001
+            return [_row("FAKE-001", Status.PASSED.value)]
+
+        monkeypatch.setattr(_reg, "resolve", lambda target: _Spec())
+        monkeypatch.setattr(
+            _reg, "transitive_requirements", lambda target: _Plan([("Fake", _fn)])
+        )
+
+        # Force tenant_id to our seeded cache key and make Graph fail so the
+        # code sets ``graph = None`` — the exact scenario we're guarding.
+        import auth as _auth
+
+        monkeypatch.setattr(_auth, "discover_tenant", lambda *a, **k: cached_tid)
+
+        class _NoGraph:
+            def __init__(self, *a, **k):
+                pass
+
+            def authenticate(self):
+                raise RuntimeError("no graph in this test")
+
+            def get_organization(self):
+                raise RuntimeError("no graph in this test")
+
+        monkeypatch.setattr(cli, "GraphClient", _NoGraph, raising=False)
+        import flightcheck.graph_client as _gc
+
+        monkeypatch.setattr(_gc, "GraphClient", _NoGraph)
+
+        captured = self._capture(monkeypatch)
+        with pytest.raises(SystemExit):
+            cli._run_single_checkpoint(
+                _args(
+                    "FAKE-001",
+                    tmp_path,
+                    no_telemetry=False,
+                    environment_url="https://contoso.crm.dynamics.com",
+                )
+            )
+        assert captured["called"] is True
+        # Regression assertion: with graph unavailable, the cache must be
+        # consulted so a previously-seen tenant still gets its display name.
+        assert captured["kwargs"]["tenant_name"] == "Contoso Cached"
+        assert captured["kwargs"]["tenant_id"] == cached_tid
