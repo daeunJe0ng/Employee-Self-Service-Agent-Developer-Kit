@@ -730,6 +730,43 @@ def _validation_context_from_args(
     )
 
 
+def _resolve_environment_ring(
+    config: dict,
+    *,
+    explicit_ring: str | None = None,
+) -> str:
+    """Resolve one supported ring and reject contradictory environment state."""
+    configured_ring = str(config.get("ring") or "").strip().casefold()
+    requested_ring = str(explicit_ring or "").strip().casefold()
+    host = str(config.get("powerPlatformApiEndpoint") or "").strip()
+    inferred_ring = None
+    if host:
+        inferred_ring = ring_from_environment_host(host)
+
+    candidates = {
+        ring
+        for ring in (requested_ring, configured_ring, inferred_ring)
+        if ring
+    }
+    if not candidates:
+        raise ValueError(
+            "The Power Platform environment ring is unavailable. Confirm "
+            "whether the environment uses prod, preprod, or test, then rerun "
+            "FlightCheck with --ring."
+        )
+    if not candidates <= {"prod", "preprod", "test"}:
+        raise ValueError(
+            "The Power Platform environment ring must be prod, preprod, or "
+            "test."
+        )
+    if len(candidates) != 1:
+        raise ValueError(
+            "The supplied ring, configured ring, and Power Platform endpoint "
+            "do not identify the same environment ring."
+        )
+    return candidates.pop()
+
+
 _PROVIDER_CONNECT_CONFIG_KEYS = frozenset({
     "appIdUri",
     "baseUrl",
@@ -833,6 +870,17 @@ def _run_single_checkpoint(args):
     if plan.requires_dataverse_endpoint and not env_url:
         print("ERROR: No dataverseEndpoint in .local/config.json.")
         sys.exit(1)
+
+    resolved_ring = None
+    if target == "ENV-CAPACITY-001":
+        try:
+            resolved_ring = _resolve_environment_ring(
+                config,
+                explicit_ring=getattr(args, "ring", None),
+            )
+        except ValueError as exc:
+            print(f"ERROR: {exc}")
+            sys.exit(1)
 
     quiet_auth = getattr(args, "quiet_auth", False)
     if not quiet_auth:
@@ -995,6 +1043,8 @@ def _run_single_checkpoint(args):
         target_matcher=lambda cid: registry.matches(target, cid),
     )
     runner.config = config
+    if resolved_ring is not None:
+        runner.ring = resolved_ring
     runner.agent_slug = (
         explicit_agent_slug
         or config.get("activeAgent")
@@ -1381,6 +1431,14 @@ def main():
         help="Override the Power Platform environment ID (used by environment_picker.py)",
     )
     parser.add_argument(
+        "--ring",
+        choices=["prod", "preprod", "test"],
+        help=(
+            "Confirm the Power Platform service ring when it cannot be "
+            "resolved from local setup state."
+        ),
+    )
+    parser.add_argument(
         "--no-open", action="store_true",
         help="Don't open the HTML report in a browser after running",
     )
@@ -1555,6 +1613,16 @@ def main():
         native_no_dataverse
         and args.scope in NATIVE_NO_DATAVERSE_SCOPE_MAP
     )
+    resolved_ring = None
+    if args.scope in {"full", "environment"}:
+        try:
+            resolved_ring = _resolve_environment_ring(
+                config,
+                explicit_ring=args.ring,
+            )
+        except ValueError as exc:
+            print(f"ERROR: {exc}")
+            sys.exit(1)
     native_supported_scopes = (
         set(NATIVE_NO_DATAVERSE_SCOPE_MAP)
         | set(NATIVE_NO_DATAVERSE_LOCAL_SCOPES)
@@ -1862,6 +1930,8 @@ def main():
     # --- Build runner ---
     runner = FlightCheckRunner(scope=args.scope)
     runner.config = config
+    if resolved_ring is not None:
+        runner.ring = resolved_ring
     runner.agent_slug = (
         getattr(args, "agent_slug", None)
         or config.get("activeAgent")
