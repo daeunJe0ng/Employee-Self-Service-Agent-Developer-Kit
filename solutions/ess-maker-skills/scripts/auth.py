@@ -38,10 +38,17 @@ except ImportError:
 from http_errors import APIError, raise_api_error  # noqa: E402
 
 
-# Microsoft public client ID for Power Platform CLI / Dataverse delegated access.
-# Source: https://learn.microsoft.com/power-platform/admin/programmability-authentication-v2
-# Scope: user_impersonation only (delegated, no admin consent).
-CLIENT_ID = "51f81489-12ee-4a9e-aaae-a2591f45987d"
+# Shared public client ID used across the ADK's MSAL flows. Delegated access
+# only (user_impersonation).
+CLIENT_ID = "417219b4-3a7d-42a2-bdb1-972bd8281a02"
+
+# Delegated scope for the Power Automate Flow Management API
+# (https://api.flow.microsoft.com). The double slash is required — the resource
+# URI ends in "/" and the scope name is appended, yielding a token whose `aud`
+# claim is `https://service.flow.microsoft.com/`. The PAC public client above is
+# broadly consented for Power Platform, so no separate app registration is
+# needed. Used by the flow run-history inspection tooling.
+FLOW_API_SCOPE = "https://service.flow.microsoft.com//user_impersonation"
 
 # Kit-internal state directory (token cache, component maps, config).
 # Renamed from "my/" -> ".local/" in PR #2 to separate kit-internal state
@@ -161,13 +168,34 @@ def discover_tenant(env_url):
         verify=True,
     )
     auth_header = resp.headers.get("WWW-Authenticate", "")
-    match = re.search(r"login\.microsoftonline\.com/([^/]+)", auth_header)
+    match = re.search(
+        r"login\.microsoftonline\.com/([^/,\s\"?]+)", auth_header, re.IGNORECASE
+    )
     if match:
         return match.group(1)
     return "organizations"
 
 
-def authenticate(env_url):
+def _dataverse_accepts_token(env_url, token):
+    """Return False only when Dataverse explicitly rejects the token."""
+    try:
+        resp = _SESSION.get(
+            f"{env_url}/api/data/v9.2/WhoAmI",
+            headers={
+                **HEADERS_BASE,
+                "Authorization": f"Bearer {token}",
+            },
+            timeout=30,
+            verify=True,
+        )
+    except requests.RequestException:
+        # Authentication should not turn a transient connectivity failure into
+        # a forced sign-in. The caller's real operation will surface it.
+        return True
+    return resp.status_code != 401
+
+
+def authenticate(env_url, preferred_username=None):
     """Get a Dataverse access token via MSAL interactive browser auth.
 
     Uses a token cache so repeat runs within the same session don't re-prompt.
@@ -188,18 +216,47 @@ def authenticate(env_url):
         CLIENT_ID, authority=authority, token_cache=cache
     )
 
-    # Try silent first (cached token from previous run)
+    # Try silent first (cached token from previous run).
     accounts = app.get_accounts()
+    preferred = str(preferred_username or "").casefold()
+    selected_account = next(
+        (
+            account
+            for account in accounts
+            if str(account.get("username") or "").casefold() == preferred
+        ),
+        accounts[0] if accounts and not preferred else None,
+    )
     result = None
-    if accounts:
-        result = app.acquire_token_silent([scope], account=accounts[0])
+    if selected_account:
+        result = app.acquire_token_silent([scope], account=selected_account)
+
+    if (
+        result
+        and "access_token" in result
+        and not _dataverse_accepts_token(env_url, result["access_token"])
+    ):
+        print("Dataverse rejected the cached session. Refreshing sign-in...")
+        clear_token_cache(
+            env_url,
+            cache=cache,
+            app=app,
+            account=selected_account,
+        )
+        app = msal.PublicClientApplication(
+            CLIENT_ID, authority=authority, token_cache=cache
+        )
+        result = None
 
     if not result or "access_token" not in result:
         print(f"Opening browser for sign-in (tenant: {tenant})...")
         print("Please select the account that has access to this environment.")
-        result = app.acquire_token_interactive(
-            [scope], prompt="select_account"
+        interactive_options = (
+            {"login_hint": preferred_username}
+            if preferred_username
+            else {"prompt": "select_account"}
         )
+        result = app.acquire_token_interactive([scope], **interactive_options)
 
     if "access_token" not in result:
         # Don't echo error_description - it can include tenant IDs and
@@ -212,29 +269,7 @@ def authenticate(env_url):
     # Persist cache with strict 0o600 permissions on POSIX. The cache holds
     # MSAL refresh tokens; default umask (0o644) would expose them to other
     # users on shared dev VMs.
-    if cache.has_state_changed:
-        os.makedirs(LOCAL_STATE_DIR, exist_ok=True)
-        try:
-            os.chmod(LOCAL_STATE_DIR, 0o700)
-        except OSError:
-            # Windows ignores chmod for directories - that's expected.
-            pass
-        # Use os.open with explicit mode so the file is created with 0o600
-        # rather than written under default umask first and chmodded after.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-        if hasattr(os, "O_BINARY"):
-            flags |= os.O_BINARY
-        fd = os.open(cache_path, flags, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(cache.serialize())
-        finally:
-            # Re-chmod is a defense-in-depth no-op on POSIX where O_CREAT mode
-            # already set 0o600, and a no-op on Windows where chmod is limited.
-            try:
-                os.chmod(cache_path, stat.S_IRUSR | stat.S_IWUSR)
-            except OSError:
-                pass
+    _persist_token_cache(cache, cache_path)
 
     # Record the tenant + start a telemetry session. No developer identity is
     # collected; active-install counts dedupe on a random instance_id.
@@ -244,16 +279,15 @@ def authenticate(env_url):
 
         claims = result.get("id_token_claims", {}) or {}
         tenant_id = claims.get("tid", "") or tenant
-        adk_telemetry.maybe_print_notice()
-        adk_telemetry.start_session(
-            tenant_id=tenant_id,
-        )
-        # Best-effort: resolve the tenant's org display name via a SILENT-ONLY
-        # Graph token (never prompts) and record it so ADK telemetry carries
-        # tenant_name even when the maker never runs FlightCheck. The Dataverse
-        # sign-in above usually leaves a first-party (FOCI) refresh token that
-        # silently satisfies the read scope; set_identity caches the name for
-        # later ADK processes. Silent failure just leaves tenant_name empty.
+        # Resolve the tenant's display name via a SILENT-ONLY Graph token
+        # BEFORE emitting adk.session.start, so the very first ADK event on a
+        # fresh install carries tenant_name (instead of blank until FlightCheck
+        # is later run). The Dataverse sign-in above usually leaves a
+        # first-party (FOCI) refresh token that silently satisfies at least
+        # one of Organization.Read.All / User.Read; the graph_client helper
+        # tries both. Silent failure is fine — set_identity is only called on
+        # success, so start_session below still emits with a blank name in the
+        # (increasingly rare) case where no Graph scope is silently redeemable.
         try:
             from flightcheck.graph_client import resolve_tenant_display_name_silent
 
@@ -262,9 +296,137 @@ def authenticate(env_url):
                 adk_telemetry.set_identity(tenant_id=tenant_id, tenant_name=_tname)
         except Exception:  # noqa: BLE001 — name resolution is best-effort
             pass
+        adk_telemetry.start_session(
+            tenant_id=tenant_id,
+        )
     except Exception:  # noqa: BLE001 — telemetry must never break auth
         pass
 
+    return result["access_token"]
+
+
+def _persist_token_cache(cache, cache_path):
+    """Write an MSAL token cache to disk with strict 0o600 permissions.
+
+    The cache holds MSAL refresh tokens; default umask (0o644) would expose them
+    to other users on shared dev VMs. No-op when the cache is unchanged. Shared
+    by ``authenticate`` (Dataverse scope) and ``get_flow_token`` (Flow scope),
+    which write the same cache file — MSAL keys entries by scope, so the two
+    tokens coexist.
+    """
+    if not cache.has_state_changed:
+        return
+    os.makedirs(LOCAL_STATE_DIR, exist_ok=True)
+    try:
+        os.chmod(LOCAL_STATE_DIR, 0o700)
+    except OSError:
+        # Windows ignores chmod for directories - that's expected.
+        pass
+    # Use os.open with explicit mode so the file is created with 0o600
+    # rather than written under default umask first and chmodded after.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(cache_path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(cache.serialize())
+    finally:
+        # Re-chmod is a defense-in-depth no-op on POSIX where O_CREAT mode
+        # already set 0o600, and a no-op on Windows where chmod is limited.
+        try:
+            os.chmod(cache_path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+
+
+def clear_token_cache(env_url=None, *, cache=None, app=None, account=None):
+    """Remove only the rejected account from the shared MSAL token cache."""
+    cache_path = os.path.join(LOCAL_STATE_DIR, ".token_cache.bin")
+    if cache is None:
+        cache = msal.SerializableTokenCache()
+        try:
+            with open(cache_path, "r", encoding="utf-8") as cache_file:
+                cache.deserialize(cache_file.read())
+        except FileNotFoundError:
+            return
+
+    if account is None:
+        if not env_url:
+            return
+        tenant = discover_tenant(env_url)
+        if app is None:
+            app = msal.PublicClientApplication(
+                CLIENT_ID,
+                authority=f"https://login.microsoftonline.com/{tenant}",
+                token_cache=cache,
+            )
+        accounts = app.get_accounts()
+        if not accounts:
+            return
+        account = accounts[0]
+
+    if app is None:
+        if not env_url:
+            return
+        tenant = discover_tenant(env_url)
+        app = msal.PublicClientApplication(
+            CLIENT_ID,
+            authority=f"https://login.microsoftonline.com/{tenant}",
+            token_cache=cache,
+        )
+    app.remove_account(account)
+    _persist_token_cache(cache, cache_path)
+
+
+def get_flow_token(env_url):
+    """Get a Flow Management API access token via MSAL interactive browser auth.
+
+    The kit's ``authenticate`` acquires a *Dataverse*-scoped token; the Flow
+    Management API (https://api.flow.microsoft.com) needs a different audience,
+    so this acquires a Flow-scoped token (``FLOW_API_SCOPE``) using the same
+    public client, tenant, and on-disk token cache. MSAL keys cache entries by
+    scope, so the Flow token coexists with any Dataverse token — a silent
+    acquisition succeeds without re-prompting once either has been obtained in
+    the same tenant.
+
+    ``env_url`` is used only to discover the tenant to sign into; the Flow scope
+    itself is tenant-global.
+    """
+    _validate_https_url(env_url)
+    tenant = discover_tenant(env_url)
+    authority = f"https://login.microsoftonline.com/{tenant}"
+    cache = msal.SerializableTokenCache()
+    cache_path = os.path.join(LOCAL_STATE_DIR, ".token_cache.bin")
+
+    if os.path.exists(cache_path):
+        with open(cache_path, "r") as f:
+            cache.deserialize(f.read())
+
+    app = msal.PublicClientApplication(
+        CLIENT_ID, authority=authority, token_cache=cache
+    )
+
+    accounts = app.get_accounts()
+    result = None
+    if accounts:
+        result = app.acquire_token_silent([FLOW_API_SCOPE], account=accounts[0])
+
+    if not result or "access_token" not in result:
+        print(f"Opening browser for sign-in (tenant: {tenant})...")
+        print("Please select the account that has access to the flows.")
+        result = app.acquire_token_interactive(
+            [FLOW_API_SCOPE], prompt="select_account"
+        )
+
+    if "access_token" not in result:
+        # Don't echo error_description - it can include tenant IDs (CWE-209).
+        error = result.get("error", "unknown_error")
+        print(f"ERROR: Flow authentication failed ({error}).")
+        print("Verify you have access to this environment's flows and try again.")
+        sys.exit(1)
+
+    _persist_token_cache(cache, cache_path)
     return result["access_token"]
 
 
@@ -396,6 +558,37 @@ def dataverse_get(env_url, token, path, params=None):
         raise AuthExpiredError(response=resp)
     resp.raise_for_status()
     return resp.json()
+
+
+def execute_action(env_url, token, action_name, data):
+    """Execute an unbound Dataverse Web API action via POST."""
+    _validate_https_url(env_url)
+    if not action_name or "/" in action_name:
+        raise ValueError("action_name must be a non-empty unbound action name")
+    headers = {
+        **HEADERS_BASE,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    url = f"{env_url}/api/data/v9.2/{action_name}"
+    _start = time.perf_counter()
+    resp = _SESSION.post(
+        url,
+        headers=headers,
+        json=data,
+        timeout=60,
+        verify=True,
+    )
+    _emit_api_call(action_name, "execute", _start, status=resp.status_code)
+    if resp.status_code == 401:
+        raise AuthExpiredError(response=resp)
+    raise_api_error(resp, resource_name=action_name, operation="execute")
+    if not resp.content:
+        return {}
+    try:
+        return resp.json()
+    except ValueError:
+        return {}
 
 
 def update_record(env_url, token, entity_set, record_id, data):
@@ -622,3 +815,36 @@ def load_config():
         )
         sys.exit(1)
     return cfg
+
+
+def is_connect_ready():
+    """Return readiness for the active locally configured DA agent."""
+    state_path = os.path.join(LOCAL_STATE_DIR, "setup", "config.json")
+    config_path = os.path.join(LOCAL_STATE_DIR, "config.json")
+    if not os.path.exists(state_path) or not os.path.exists(config_path):
+        return False
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            "ERROR: Could not read DA workspace state at "
+            f"{state_path} and {config_path}: "
+            f"{exc}. Run /setup again."
+        )
+        sys.exit(1)
+    if state.get("schema_version") != 4:
+        return False
+    agents = state.get("agents")
+    active_slug = config.get("activeAgent")
+    if not isinstance(agents, dict) or not isinstance(active_slug, str):
+        return False
+    return any(
+        isinstance(agent_state, dict)
+        and isinstance(agent_state.get("agent"), dict)
+        and agent_state["agent"].get("workspace_slug") == active_slug
+        and agent_state.get("connect_ready") is True
+        for agent_state in agents.values()
+    )

@@ -1,3 +1,9 @@
+# Explicit build backend so `pip install -e .[test]` is deterministic across
+# pip/setuptools versions and honors the [tool.setuptools] config below.
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "ess-maker-kit-tests"
 version = "0.0.0"
@@ -5,7 +11,7 @@ description = "Internal test suite for the ESS Maker Kit. Not packaged for distr
 requires-python = ">=3.11"
 
 # Runtime deps live in solutions/ess-maker-skills/scripts/requirements.txt and
-# solutions/ess-maker-skills/src/mcp/{workday,servicenow}/requirements.txt.
+# solutions/ess-maker-skills/src/mcp/{agentconfig,workday,servicenow}/requirements.txt.
 # This file declares only the *test* dependencies needed by the suite under
 # tests/. Install with: pip install -e .[test]
 [project.optional-dependencies]
@@ -16,7 +22,22 @@ test = [
     "responses>=0.25,<1.0",
     "respx>=0.21,<1.0",            # for httpx-based code (src/mcp/workday/client.py)
     "PyYAML>=6.0,<7.0",
+    "mcp>=1.29.0,<2.0.0",
+    "jsonschema>=4.0,<5.0",
 ]
+skill-eval = [
+    "github-copilot-sdk==1.0.14",
+]
+
+# This project is a *test harness*, not a distributable package: it ships no
+# importable package of its own (the code under test is put on sys.path via
+# [tool.pytest.ini_options].pythonpath below). Without this, `pip install -e .`
+# triggers setuptools flat-layout auto-discovery, which errors with "Multiple
+# top-level packages discovered" on the repo's top-level dirs (setup/, samples/,
+# solutions/, ...). Declaring an empty module list makes the editable install a
+# deps-only no-op, which is exactly what `pip install -e .[test]` needs.
+[tool.setuptools]
+py-modules = []
 
 # Ruff configuration for the repo-root Python sources (solutions/ess-maker-skills/
 # scripts + src/mcp, and tests/). The ESS NextGen Migration Toolkit under

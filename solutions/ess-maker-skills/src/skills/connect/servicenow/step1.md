@@ -167,50 +167,16 @@ pip install -r src/mcp/servicenow/requirements.txt
 
 If pip fails, show the error and suggest `python -m pip install ...` instead.
 
-Read `.vscode/mcp.json`. If it exists, parse it. If it doesn't exist,
-start with an empty `{ "servers": {} }` object.
+Configure the contextual ServiceNow MCP server:
 
-Add a `ServiceNow` entry to the `servers` object. **Keep all existing
-entries (like Dataverse) intact.**
-
-Also ensure the top-level `inputs` array contains the ServiceNow input
-definitions. If `inputs` doesn't exist yet, create it. If it exists,
-append to it (don't overwrite existing inputs like Dataverse ones).
-
-Write the merged result back to `.vscode/mcp.json`:
-
-```json
-{
-  "inputs": [
-    {
-      "id": "servicenowUsername",
-      "type": "promptString",
-      "description": "ServiceNow admin username",
-      "password": false
-    },
-    {
-      "id": "servicenowPassword",
-      "type": "promptString",
-      "description": "ServiceNow admin password",
-      "password": true
-    }
-  ],
-  "servers": {
-    "ServiceNow": {
-      "command": "python",
-      "args": ["server.py"],
-      "cwd": "${workspaceFolder}/src/mcp/servicenow",
-      "env": {
-        "SERVICENOW_INSTANCE_URL": "https://{INSTANCE_NAME}.service-now.com",
-        "SERVICENOW_USERNAME": "${input:servicenowUsername}",
-        "SERVICENOW_PASSWORD": "${input:servicenowPassword}"
-      }
-    }
-  }
-}
+```text
+python scripts/mcp_config.py configure servicenow --instance-url "https://{INSTANCE_NAME}.service-now.com"
 ```
 
-Replace `{INSTANCE_NAME}` with the actual instance name from step 1.1.
+Replace `{INSTANCE_NAME}` with the actual instance name from step 1.1. If
+configuration fails, show the exact error and stop. The command adds the
+ServiceNow credential inputs and preserves every other server, input, and
+top-level field in `.vscode/mcp.json`.
 
 ---
 
@@ -245,14 +211,14 @@ query_table(table="sys_user", query="user_name=admin", fields="sys_id,user_name,
 
 **If the query succeeds** (returns at least one record):
 
-Update `.local/connect/servicenow/tasks.md` — change step 1 from
+Update `.local/connect/servicenow/steps.md` — change step 1 from
 `- [ ]` to `- [x]`.
 
 **Message:**
 
 ✅ Instance configured — connected to `{INSTANCE_NAME}`.
 
-| # | Task | Status |
+| # | Step | Status |
 |---|------|--------|
 | 1 | Instance configured | ✅ |
 | 2 | Connection secured | ⬜ |
@@ -286,7 +252,7 @@ Route by SNOW_AUTH for the Power Platform connector:
   Read `src/skills/connect/servicenow/step2-oauth2.md` and follow it.
 
 - If SNOW_AUTH is `basic`:
-  Update step 2 from `- [ ]` to `- [x]` in `.local/connect/servicenow/tasks.md`.
+  Update step 2 from `- [ ]` to `- [x]` in `.local/connect/servicenow/steps.md`.
   Read `src/skills/connect/servicenow/step3-basic.md` and follow it.
 
 When the Power Platform flow completes (step 4 finishes), check

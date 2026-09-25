@@ -27,7 +27,7 @@ except ImportError:
     sys.exit(1)
 
 
-CLIENT_ID = "51f81489-12ee-4a9e-aaae-a2591f45987d"
+CLIENT_ID = "417219b4-3a7d-42a2-bdb1-972bd8281a02"
 
 # 96ff4394-9197-43aa-b393-6a41652e21f8 is the well-known Power Virtual Agents
 # first-party app ID, used as the token audience for the Island Gateway API.
@@ -199,3 +199,46 @@ class PVAClient:
                 knowledge_sources.append(comp)
 
         return knowledge_sources
+
+    def get_dialog_components(self, bot_id: str) -> list[dict]:
+        """
+        Fetch DialogComponent (topic) definitions from the Island Gateway API.
+
+        Uses the same botcomponents endpoint as get_knowledge_sources but
+        filters for DialogComponent entries. Each DialogComponent describes a
+        published or draft topic, including its trigger, its dialog action
+        tree (dialog.beginDialog.actions), and its status (Active / Inactive).
+        Handoff auto-template topics store their target-agent id in a
+        SetVariable action on Topic.HandoffAgentId inside that action tree.
+        """
+        if not self.is_configured:
+            return []
+
+        url = (
+            f"{self._gateway_url}/api/botmanagement/v1"
+            f"/environments/{self._bap_env_id}"
+            f"/bots/{bot_id}/content/botcomponents"
+        )
+        headers = {
+            "Authorization": f"Bearer {self._pva_token}",
+            "Content-Type": "application/json",
+            "x-ms-client-tenant-id": self.tenant_id,
+            "x-cci-tenantid": self.tenant_id,
+            "x-cci-bapenvironmentid": self._bap_env_id,
+            "x-cci-cdsbotid": bot_id,
+        }
+
+        resp = requests.post(url, headers=headers, json={}, timeout=60)
+        if not resp.ok:
+            raise RuntimeError(
+                f"Island Gateway returned {resp.status_code}: {resp.text[:200]}"
+            )
+        data = resp.json()
+
+        dialog_components = []
+        for change in data.get("botComponentChanges", []):
+            comp = change.get("component", {})
+            if comp.get("$kind") == "DialogComponent":
+                dialog_components.append(comp)
+
+        return dialog_components

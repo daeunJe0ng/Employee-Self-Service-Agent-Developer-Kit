@@ -58,9 +58,54 @@ class TestListEnvironments:
 
         dv_envs, excluded = list_environments.get_dataverse_environments()
 
+        mock_instance.authenticate.assert_called_once_with(include_flow=False)
         assert len(dv_envs) == 2
         assert excluded == 1
         assert all(e["instanceUrl"] for e in dv_envs)
+
+    @patch("list_environments.PPAdminClient")
+    def test_da_listing_keeps_environment_without_dataverse(self, mock_cls):
+        import base64
+
+        import list_environments
+
+        environment_id = "00000000-0000-4000-8000-000000001111"
+        tenant_id = "00000000-0000-4000-8000-000000009999"
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"tid": tenant_id}).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+        mock_instance = mock_cls.return_value
+        mock_instance.authenticate.return_value = (
+            f"header.{payload}.signature"
+        )
+        mock_instance.get_environments.return_value = [
+            {
+                "name": f"Default-{environment_id}",
+                "properties": {
+                    "displayName": "DA without Dataverse",
+                    "environmentSku": "Developer",
+                    "linkedEnvironmentMetadata": {},
+                    "states": {"runtime": {"id": "Enabled"}},
+                },
+            }
+        ]
+
+        environments, authenticated_tenant = (
+            list_environments.list_environments_with_tenant()
+        )
+
+        assert authenticated_tenant == tenant_id
+        assert environments == [
+            {
+                "id": f"Default-{environment_id}",
+                "agentBuilderEnvironmentId": environment_id,
+                "displayName": "DA without Dataverse",
+                "type": "Developer",
+                "state": "Enabled",
+                "instanceUrl": "",
+                "region": "",
+            }
+        ]
 
     @patch("list_environments.PPAdminClient")
     def test_strips_trailing_slash_from_instance_url(self, mock_cls):
@@ -77,6 +122,40 @@ class TestListEnvironments:
 
         assert dv_envs[0]["instanceUrl"] == "https://org.crm.dynamics.com"
 
+    def test_finds_environment_by_url_hostname(self):
+        import list_environments
+
+        environments = [
+            {
+                "id": "env-001",
+                "displayName": "Target",
+                "instanceUrl": "https://org.crm.dynamics.com",
+            },
+        ]
+
+        selected = list_environments.find_environment_by_url(
+            environments,
+            "https://ORG.crm.dynamics.com/",
+        )
+
+        assert selected == environments[0]
+
+    def test_resolve_environment_rejects_invalid_url_cleanly(
+        self,
+        capsys,
+    ):
+        import list_environments
+
+        with pytest.raises(SystemExit) as exc_info:
+            list_environments.resolve_environment_for_user(
+                "http://insecure.example"
+            )
+
+        assert exc_info.value.code == 1
+        assert "ERROR: Power Platform authentication failed" in (
+            capsys.readouterr().out
+        )
+
     @patch("list_environments.PPAdminClient")
     def test_exits_on_permission_error(self, mock_cls):
         """get_environments returning an error dict causes sys.exit."""
@@ -89,6 +168,95 @@ class TestListEnvironments:
         with pytest.raises(SystemExit) as exc_info:
             list_environments.get_dataverse_environments()
         assert exc_info.value.code == 1
+
+
+class TestStandaloneFlightCheckAgentDiscovery:
+    @patch("auth.query_all")
+    def test_discovers_agents_without_product_classification(
+        self,
+        query_all,
+    ) -> None:
+        import discover
+
+        query_all.return_value = [
+            {
+                "botid": "bot-1",
+                "name": "Employee Self-Service",
+                "schemaname": "contoso_ess",
+                "ismanaged": True,
+            }
+        ]
+
+        agents = discover.discover_agents(
+            "https://org.crm.dynamics.com",
+            "token",
+        )
+
+        assert agents == [
+            {
+                "botid": "bot-1",
+                "name": "Employee Self-Service",
+                "schemaname": "contoso_ess",
+                "ismanaged": True,
+            }
+        ]
+        assert set(agents[0]) == {
+            "botid",
+            "name",
+            "schemaname",
+            "ismanaged",
+        }
+
+    def test_url_selection_emits_installer_contract(
+        self,
+        monkeypatch,
+        capsys,
+    ) -> None:
+        import auth
+        import discover
+
+        agents = [
+            {
+                "botid": "bot-1",
+                "name": "First",
+                "schemaname": "first",
+                "ismanaged": False,
+            },
+            {
+                "botid": "bot-2",
+                "name": "Second",
+                "schemaname": "second",
+                "ismanaged": True,
+            },
+        ]
+        monkeypatch.setattr(auth, "authenticate", lambda _url: "token")
+        monkeypatch.setattr(
+            discover,
+            "discover_agents",
+            lambda _url, _token: agents,
+        )
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "discover.py",
+                "--url",
+                "https://org.crm.dynamics.com/",
+                "--select",
+                "2",
+            ],
+        )
+
+        discover.main()
+
+        output = capsys.readouterr().out
+        marker = next(
+            line
+            for line in output.splitlines()
+            if line.startswith("SELECTED_AGENT_JSON:")
+        )
+        assert json.loads(marker.removeprefix("SELECTED_AGENT_JSON:")) == (
+            agents[1]
+        )
 
     @patch("list_environments.PPAdminClient")
     def test_exits_on_auth_failure(self, mock_cls):
@@ -226,6 +394,32 @@ class TestDiscoverListEnvironmentsMode:
     """Tests for discover.py --list-environments integration with list_environments."""
 
     @patch("list_environments.PPAdminClient")
+    def test_list_outputs_reusable_environment_json(
+        self, mock_cls, capsys, monkeypatch
+    ):
+        mock_instance = mock_cls.return_value
+        mock_instance.authenticate.return_value = "token"
+        mock_instance.get_environments.return_value = _make_environments(count=2)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["discover.py", "--list-environments"],
+        )
+
+        import discover
+
+        discover.main()
+
+        output = capsys.readouterr().out
+        json_line = [
+            line
+            for line in output.splitlines()
+            if line.startswith("ENVIRONMENT_LIST_JSON:")
+        ][0]
+        payload = json.loads(json_line.split("ENVIRONMENT_LIST_JSON:", 1)[1])
+        assert len(payload) == 2
+        assert payload[0]["displayName"] == "Test Environment 0"
+
+    @patch("list_environments.PPAdminClient")
     def test_select_outputs_json(self, mock_cls, capsys, monkeypatch):
         """--list-environments --select N outputs SELECTED_ENV_JSON."""
         mock_instance = mock_cls.return_value
@@ -269,12 +463,94 @@ class TestDiscoverListEnvironmentsMode:
             discover.main()
         assert exc_info.value.code == 1
 
-    def test_url_required_without_list_environments(self, monkeypatch):
-        """Without --list-environments, --url is required."""
-        monkeypatch.setattr("sys.argv", ["discover.py"])
+    @patch("list_environments.PowerPlatformClient")
+    def test_resolve_environment_url_outputs_selected_json(
+        self,
+        mock_cls,
+        capsys,
+        monkeypatch,
+    ):
+        mock_instance = mock_cls.return_value
+        mock_instance.authenticate.return_value = "token"
+        monkeypatch.setattr(
+            "list_environments.discover_tenant",
+            lambda _url: "tenant-id",
+        )
+        mock_instance.list_environments_for_user.return_value = [
+            {
+                "id": "env-000",
+                "displayName": "Test Environment 0",
+                "type": "Sandbox",
+                "state": "Ready",
+                "url": "https://org000.crm.dynamics.com/",
+            },
+            {
+                "id": "env-001",
+                "displayName": "Test Environment 1",
+                "type": "Sandbox",
+                "state": "Ready",
+                "url": "https://org001.crm.dynamics.com/",
+            },
+        ]
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "discover.py",
+                "--resolve-environment-url",
+                "https://org001.crm.dynamics.com/",
+            ],
+        )
+
+        import discover
+
+        discover.main()
+
+        output = capsys.readouterr().out
+        assert "Environment Name" not in output
+        json_line = [
+            line
+            for line in output.splitlines()
+            if line.startswith("SELECTED_ENV_JSON:")
+        ][0]
+        payload = json.loads(json_line.split("SELECTED_ENV_JSON:", 1)[1])
+        assert payload["id"] == "env-001"
+        assert payload["displayName"] == "Test Environment 1"
+
+    @patch("list_environments.PowerPlatformClient")
+    def test_resolve_environment_url_rejects_unknown_url(
+        self,
+        mock_cls,
+        capsys,
+        monkeypatch,
+    ):
+        mock_instance = mock_cls.return_value
+        mock_instance.authenticate.return_value = "token"
+        monkeypatch.setattr(
+            "list_environments.discover_tenant",
+            lambda _url: "tenant-id",
+        )
+        mock_instance.list_environments_for_user.return_value = [
+            {
+                "id": "env-000",
+                "displayName": "Test Environment 0",
+                "type": "Sandbox",
+                "state": "Ready",
+                "domainName": "org000.crm.dynamics.com",
+            },
+        ]
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "discover.py",
+                "--resolve-environment-url",
+                "https://unknown.crm.dynamics.com",
+            ],
+        )
 
         import discover
 
         with pytest.raises(SystemExit) as exc_info:
             discover.main()
-        assert exc_info.value.code == 2  # argparse error
+
+        assert exc_info.value.code == 1
+        assert "did not match" in capsys.readouterr().out

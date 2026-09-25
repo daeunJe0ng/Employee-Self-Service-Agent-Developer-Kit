@@ -59,8 +59,8 @@ function test(name, fn) {
 
 console.log('ACTIONS structure:');
 
-test('has 7 actions', () => {
-    assert.strictEqual(ACTIONS.length, 7);
+test('has 8 actions', () => {
+    assert.strictEqual(ACTIONS.length, 8);
 });
 
 test('every action has required fields', () => {
@@ -69,15 +69,16 @@ test('every action has required fields', () => {
         assert.ok(a.icon, `missing icon for ${a.id}`);
         assert.ok(a.label, `missing label for ${a.id}`);
         assert.ok(a.sub, `missing sub for ${a.id}`);
-        assert.ok(a.slash, `missing slash for ${a.id}`);
+        assert.ok(a.query, `missing query for ${a.id}`);
         assert.ok(Array.isArray(a.requires), `requires not array for ${a.id}`);
     }
 });
 
-test('every slash command starts with /', () => {
-    for (const a of ACTIONS) {
-        assert.ok(a.slash.startsWith('/'), `${a.id}: slash "${a.slash}" doesn't start with /`);
-    }
+test('landing-page action sends the skill-triggering query', () => {
+    const landingPage = ACTIONS.find(a => a.id === 'landingPage');
+    assert.strictEqual(landingPage.label, 'Customize landing page');
+    assert.strictEqual(landingPage.query, 'Customize my landing page');
+    assert.deepStrictEqual(landingPage.requires, ['setup']);
 });
 
 test('setup has no requirements', () => {
@@ -199,6 +200,57 @@ test('exposes the essMaker.autoUpdateCheck opt-out setting', () => {
     assert.strictEqual(prop.default, true);
 });
 
+console.log('\nfirst-install mode dispatch (ADO #7895603):');
+
+test('extension does not prompt for mode inside VS Code', () => {
+    // The mode is resolved in the installer CLI before VS Code launches
+    // (setup/Install-EssAdk.ps1 + install-ess-adk.sh prompt there), so
+    // essMaker.mode is already written to settings.json by the time the
+    // extension activates. If the extension prompted here on first
+    // launch, its picker would race the theme picker + Copilot sign-in
+    // that VS Code renders on first launch, so we guard against a mode
+    // picker regressing into the extension.
+    assert.ok(!/async function promptForInstallMode/.test(src), 'promptForInstallMode should not exist; the installer prompts in the CLI');
+    assert.ok(!/showQuickPick\([\s\S]{0,200}?Maker \(recommended\)/.test(src), 'in-VS-Code Maker/Developer picker should not exist');
+});
+
+test('firstInstallDispatch defaults blank / "prompt" installer values to maker', () => {
+    assert.ok(/if\s*\(!effectiveMode \|\| effectiveMode === 'prompt'\)/.test(src), 'fallback branch should still guard blank / prompt');
+    assert.ok(/effectiveMode = 'maker'/.test(src), 'fallback should default to maker without a modal');
+});
+
+test('firstInstallDispatch persists the resolved mode to global settings', () => {
+    assert.ok(/'essMaker\.mode',[\s\S]*?ConfigurationTarget\.Global/.test(src), 'resolved mode should be persisted with ConfigurationTarget.Global');
+});
+
+test('developer mode does NOT inject /setup from the extension (installer owns dispatch)', () => {
+    // F-3 regression guard: the installer already runs ``code chat "/setup"``
+    // for developer mode before launching VS Code, so injecting again in
+    // the extension opens two /setup chats on the fresh-install path.
+    // The isDeveloperMode branch of firstInstallDispatch must therefore
+    // not call injectSetup / waitForWelcomeWizard.
+    const devBranch = src.match(/if\s*\(isDeveloperMode\)\s*\{([\s\S]*?)\n\s*return;\s*\n\s*\}/);
+    assert.ok(devBranch, 'isDeveloperMode branch not found in firstInstallDispatch');
+    assert.ok(!/injectSetup\s*\(/.test(devBranch[1]), 'developer branch must not call injectSetup - installer owns /setup dispatch');
+    assert.ok(!/waitForWelcomeWizard\s*\(/.test(devBranch[1]), 'developer branch must not wait for welcome wizard to inject /setup');
+});
+
+test('legacy essMaker.mode values are normalized (lite -> maker, standard -> developer)', () => {
+    assert.ok(/function normalizeInstallerMode/.test(src), 'normalizeInstallerMode helper missing');
+    assert.ok(/if\s*\(mode === 'lite'\)\s*return 'maker'/.test(src), "'lite' should be normalized to 'maker'");
+    assert.ok(/if\s*\(mode === 'standard'\)\s*return 'developer'/.test(src), "'standard' should be normalized to 'developer'");
+    assert.ok(/normalizeInstallerMode\(installerMode\)/.test(src), 'firstInstallDispatch should normalize before checking fallback');
+});
+
+test('essMaker.mode config schema accepts the new maker/developer values', () => {
+    const modeProp = pkg.contributes.configuration.properties['essMaker.mode'];
+    assert.ok(modeProp, 'essMaker.mode missing from configuration');
+    assert.ok(modeProp.enum.includes('maker'), "enum should include 'maker'");
+    assert.ok(modeProp.enum.includes('developer'), "enum should include 'developer'");
+    assert.ok(modeProp.enum.includes('lite'), "enum should still include legacy 'lite'");
+    assert.ok(modeProp.enum.includes('standard'), "enum should still include legacy 'standard'");
+});
+
 console.log('\nauto-update: parseLsRemoteSha:');
 
 test('extracts sha from a ls-remote line', () => {
@@ -245,6 +297,12 @@ test('extensionIsStale true only when repo version is newer', () => {
     assert.strictEqual(extensionIsStale('0.4.23', '0.4.24'), true);
     assert.strictEqual(extensionIsStale('0.4.24', '0.4.24'), false);
     assert.strictEqual(extensionIsStale('0.4.25', '0.4.24'), false);
+});
+
+test('landing-page package prompts existing 0.4.24 installs to reinstall', () => {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    assert.strictEqual(extensionIsStale('0.4.24', packageJson.version), true);
+    assert.ok(ACTIONS.some((action) => action.id === 'landingPage'));
 });
 
 test('extensionIsStale false when a version is missing', () => {

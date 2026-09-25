@@ -2,10 +2,10 @@
 # Licensed under the MIT License.
 
 """
-ESS Maker Kit — Power Platform API (Licensing / Billing Policy) Client
+ESS Maker Kit — Power Platform API Client
 
-Provides authenticated read access to the Power Platform API billing-policy
-surface for FlightCheck PRE-005 (Pay-As-You-Go binding detection).
+Provides authenticated access to the Power Platform API for FlightCheck
+licensing checks and the foundation setup environment/application workflow.
 
 This is a DIFFERENT host and audience from the BAP admin client in
 ``pp_admin_client.py``:
@@ -18,9 +18,9 @@ This is a DIFFERENT host and audience from the BAP admin client in
 Authentication reuses the same MSAL token cache as auth.py /
 graph_client.py / pp_admin_client.py (``.local/.token_cache.bin``).
 
-API contract tier: ``documented`` — see the "API tier registry" in
-``tests/fixtures/cassettes/INDEX.md``. Response shapes verified against
-the MS Learn references cited on each method.
+API contract tier: ``documented`` — see the per-surface entries in the
+"API tier registry" in ``tests/fixtures/cassettes/INDEX.md``. Response shapes
+are verified against the Microsoft Learn references cited on each method.
 """
 
 import os
@@ -46,8 +46,8 @@ except ImportError:
     sys.exit(1)
 
 
-# Shared first-party public client used across the kit's MSAL flows.
-CLIENT_ID = "51f81489-12ee-4a9e-aaae-a2591f45987d"
+# Shared public client ID used across the ADK's MSAL flows.
+CLIENT_ID = "417219b4-3a7d-42a2-bdb1-972bd8281a02"
 
 PP_API_BASE = "https://api.powerplatform.com"
 # The Power Platform API uses its own audience, distinct from the BAP /
@@ -76,8 +76,9 @@ class PowerPlatformClient:
     def __init__(self, tenant_id: str):
         self.tenant_id = tenant_id
         self._token: str | None = None
+        self.signed_in_username: str | None = None
 
-    def authenticate(self) -> str:
+    def authenticate(self, preferred_username: str | None = None) -> str:
         """Acquire a Power Platform API access token.
 
         Uses the shared MSAL cache so the operator's existing sign-in is
@@ -97,12 +98,31 @@ class PowerPlatformClient:
 
         accounts = app.get_accounts()
         result = None
-        if accounts:
-            result = app.acquire_token_silent([PP_API_SCOPE], account=accounts[0])
+        preferred = str(preferred_username or "").casefold()
+        selected_account = next(
+            (
+                account
+                for account in accounts
+                if str(account.get("username") or "").casefold() == preferred
+            ),
+            accounts[0] if accounts and not preferred else None,
+        )
+        if selected_account:
+            result = app.acquire_token_silent(
+                [PP_API_SCOPE],
+                account=selected_account,
+            )
         if not result or "access_token" not in result:
             print("Opening browser for Power Platform API sign-in...")
+            selected_account = None
+            interactive_options = (
+                {"login_hint": preferred_username}
+                if preferred_username
+                else {"prompt": "select_account"}
+            )
             result = app.acquire_token_interactive(
-                [PP_API_SCOPE], prompt="select_account"
+                [PP_API_SCOPE],
+                **interactive_options,
             )
         if "access_token" not in result:
             # Don't echo error_description - it can include tenant IDs and
@@ -124,6 +144,12 @@ class PowerPlatformClient:
                 f.write(cache.serialize())
 
         self._token = result["access_token"]
+        claims = result.get("id_token_claims", {}) or {}
+        self.signed_in_username = (
+            claims.get("preferred_username")
+            or claims.get("upn")
+            or (selected_account or {}).get("username")
+        )
         return self._token
 
     @property
@@ -159,9 +185,24 @@ class PowerPlatformClient:
             resp.raise_for_status()
             data = resp.json()
             items.extend(data.get("value", []))
-            url = data.get("@odata.nextLink") or data.get("nextLink")
+            url = (
+                data.get("@odata.nextLink")
+                or data.get("@odata.nextlink")
+                or data.get("nextLink")
+            )
             params = None
         return items
+
+    def list_environments_for_user(self) -> list | dict:
+        """List environments available to the authenticated user.
+
+        Microsoft Learn:
+        https://learn.microsoft.com/en-us/rest/api/power-platform/environmentmanagement/environments/list-environments-for-user
+        """
+        return self._get_all(
+            "/environmentmanagement/environments",
+            params={"api-version": API_VERSION},
+        )
 
     def list_billing_policies(self) -> list | dict:
         """List all billing policies for the tenant.
@@ -232,3 +273,165 @@ class PowerPlatformClient:
         resp.raise_for_status()
         data = resp.json()
         return data.get("currencyAllocations", []) or []
+
+    def list_environment_application_packages(
+        self,
+        environment_id: str,
+    ) -> list | dict:
+        """List Marketplace application packages available to an environment.
+
+        Microsoft Learn:
+        https://learn.microsoft.com/en-us/rest/api/power-platform/appmanagement/applications/get-environment-application-package
+        """
+        return self._get_all(
+            f"/appmanagement/environments/{environment_id}/applicationPackages",
+            params={"api-version": API_VERSION},
+        )
+
+    def list_maker_evaluation_test_sets(
+        self,
+        environment_id: str,
+        bot_id: str,
+    ) -> list | dict:
+        """List Copilot Studio maker evaluation test sets for an agent.
+
+        Microsoft Learn:
+        https://learn.microsoft.com/rest/api/power-platform/copilotstudio/bots/list-maker-evaluation-test-sets
+        """
+        return self._get_all(
+            (
+                f"/copilotstudio/environments/{environment_id}/bots/{bot_id}"
+                "/api/makerevaluation/testsets"
+            ),
+            params={"api-version": API_VERSION},
+        )
+
+    def run_maker_evaluation_test_set(
+        self,
+        environment_id: str,
+        bot_id: str,
+        test_set_id: str,
+        body: dict,
+    ) -> dict:
+        """Start one asynchronous Copilot Studio maker evaluation run.
+
+        Microsoft Learn:
+        https://learn.microsoft.com/rest/api/power-platform/copilotstudio/bots/run-maker-evaluation-test-set
+        """
+        url = (
+            f"{PP_API_BASE}/copilotstudio/environments/{environment_id}"
+            f"/bots/{bot_id}/api/makerevaluation/testsets/{test_set_id}/run"
+        )
+        resp = _SESSION.post(
+            url,
+            headers={**self.headers, "Content-Type": "application/json"},
+            params={"api-version": API_VERSION},
+            json=body,
+            timeout=120,
+        )
+        if resp.status_code in (401, 403):
+            return {
+                "_error": "insufficient_permissions",
+                "_status": resp.status_code,
+            }
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    def list_maker_evaluation_test_runs(
+        self,
+        environment_id: str,
+        bot_id: str,
+    ) -> list | dict:
+        """List prior Copilot Studio maker evaluation runs for an agent.
+
+        Microsoft Learn:
+        https://learn.microsoft.com/rest/api/power-platform/copilotstudio/bots/list-maker-evaluation-test-runs
+        """
+        return self._get_all(
+            (
+                f"/copilotstudio/environments/{environment_id}/bots/{bot_id}"
+                "/api/makerevaluation/testruns"
+            ),
+            params={"api-version": API_VERSION},
+        )
+
+    def get_maker_evaluation_test_run(
+        self,
+        environment_id: str,
+        bot_id: str,
+        run_id: str,
+    ) -> dict:
+        """Get status and case-level results for one maker evaluation run.
+
+        Microsoft Learn:
+        https://learn.microsoft.com/rest/api/power-platform/copilotstudio/bots/get-maker-evaluation-test-run
+        """
+        url = (
+            f"{PP_API_BASE}/copilotstudio/environments/{environment_id}"
+            f"/bots/{bot_id}/api/makerevaluation/testruns/{run_id}"
+        )
+        resp = _SESSION.get(
+            url,
+            headers=self.headers,
+            params={"api-version": API_VERSION},
+            timeout=120,
+        )
+        if resp.status_code in (401, 403):
+            return {
+                "_error": "insufficient_permissions",
+                "_status": resp.status_code,
+            }
+        if resp.status_code == 404:
+            return {"_error": "not_found", "_status": 404}
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    def install_application_package(
+        self,
+        environment_id: str,
+        unique_name: str,
+    ) -> dict:
+        """Start installing a Marketplace application package.
+
+        Microsoft Learn:
+        https://learn.microsoft.com/en-us/rest/api/power-platform/appmanagement/applications/install-application-package
+
+        This is an intentional durable tenant write. Callers must first read
+        the package state and skip this POST when the package is installed or
+        already installing. The module-level retry policy excludes POST, so a
+        lost response is never replayed automatically.
+        """
+        url = (
+            f"{PP_API_BASE}/appmanagement/environments/{environment_id}"
+            f"/applicationPackages/{unique_name}/install"
+        )
+        resp = _SESSION.post(
+            url,
+            headers={**self.headers, "Content-Type": "application/json"},
+            params={"api-version": API_VERSION},
+            json={"payloadValue": ""},
+            timeout=60,
+        )
+        if resp.status_code in (401, 403):
+            return {
+                "_error": "insufficient_permissions",
+                "_status": resp.status_code,
+            }
+        if resp.status_code not in (200, 202):
+            resp.raise_for_status()
+
+        data = resp.json() if resp.content else {}
+        if not isinstance(data, dict):
+            data = {}
+        operation_id = (
+            data.get("lastOperation", {}).get("operationId")
+            if isinstance(data, dict)
+            else None
+        )
+        return {
+            **data,
+            "_async": resp.status_code == 202,
+            "_operationId": operation_id,
+        }

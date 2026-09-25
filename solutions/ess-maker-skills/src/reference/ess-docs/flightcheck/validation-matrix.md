@@ -70,6 +70,19 @@ Workday → Entra Admin + Workday Admin).
 | ENV-CAPACITY-001 | Copilot Studio message capacity provisioned | Critical | Power Platform Licensing API | [requirements-messages-management#prepaid-capacity](https://learn.microsoft.com/en-us/microsoft-copilot-studio/requirements-messages-management?tabs=new#prepaid-capacity) |
 | ENV-008 | DLP policies configured | High | BAP Admin API | [prepare#allow-the-external-systems-connector](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/prepare#allow-the-external-systems-connector) |
 
+### Native no-Dataverse agent readiness (DA-xxx)
+
+These checkpoints replace Dataverse solution/reference checks for a native
+AgentBuilder agent. If the config also has a `dataverseEndpoint`, FlightCheck
+preserves the hybrid/legacy route instead.
+
+| ID | Check | Priority | Method | Doc Link |
+|----|-------|----------|--------|----------|
+| DA-AGENT-001 | Saved active agent is directly accessible as the exact editable Dev agent | Critical | AgentBuilder Minimal Bot API | — |
+| DA-CONTENT-001 | Exact agent returns an authored component footprint | High | AgentBuilder Minimal Bot API | — |
+| DA-CONN-001 | Summary of native logical-to-physical connection readiness | High | AgentBuilder component snapshot + Power Platform Connectivity API | — |
+| DA-CONN-002+ | One detail row per logical connector reference. Exact ID matches are verified; a sole connected candidate passes with an explicit unverified-binding disclaimer; ambiguous candidates warn without guessing; missing or disconnected candidates do not pass. | High | AgentBuilder component snapshot + Power Platform Connectivity API | — |
+
 ## 2b. ESS Solution Installation (ESS-SOLN-xxx)
 
 | ID | Check | Priority | Role | Gate | Method | Doc Link |
@@ -133,8 +146,8 @@ are **not** minted here. See the setup catalog below for the owning checklist ro
 
 | ID | Check | Priority | Method | Doc Link |
 |----|-------|----------|--------|----------|
-| WD-CONN-AUTH-001 | Workday connection authentication is **Microsoft Entra ID Integrated**. Reads the cached Workday (`ff0df`) reference and echoes the observed `connectionParametersSet.name` + owner from the Power Platform admin connection. **Always `MANUAL`** — the admin API exposes no kit-verifiable fingerprint for the "Microsoft Entra ID Integrated" auth type, so this echoes for operator confirmation rather than PASS/FAIL (see reconciliation note below). | High | Power Platform admin connections (echo only) | [workday-simplified-setup](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday-simplified-setup) |
-| DV-CONN-001 | ESS Dataverse connection reference (`…_92b66`, connector `shared_commondataserviceforapps`) bound to an **active** connection; echoes the owner so the operator can confirm it is their own account. Programmatic PASS/FAIL on a documented-tier Dataverse `connectionreferences` read. **Non-`WD` family.** | High | Dataverse `connectionreferences` (+ PP admin owner echo) | [workday-simplified-setup](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday-simplified-setup) |
+| WD-CONN-AUTH-001 | Workday connection authentication is **Microsoft Entra ID Integrated**. Reads the cached Workday (`ff0df` or `msdyn_sharedworkdaysoap_workdayruntime`) reference and echoes the observed `connectionParametersSet.name` + owner from the Power Platform admin connection. **Always `MANUAL`** — the admin API exposes no kit-verifiable fingerprint for the "Microsoft Entra ID Integrated" auth type, so this echoes for operator confirmation rather than PASS/FAIL (see reconciliation note below). | High | Power Platform admin connections (echo only) | [workday-simplified-setup](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday-simplified-setup) |
+| DV-CONN-001 | ESS Dataverse connection reference (`…_92b66` or `msdyn_sharedcommondataserviceforapps_workdayruntime`, connector `shared_commondataserviceforapps`) bound to an **active** connection; echoes the owner so the operator can confirm it is their own account. Programmatic PASS/FAIL on a documented-tier Dataverse `connectionreferences` read. **Non-`WD` family.** | High | Dataverse `connectionreferences` (+ PP admin owner echo) | [workday-simplified-setup](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday-simplified-setup) |
 | WD-REST-001 | Captured `restBaseUrl` is present and **trimmed to** `/api`. Pure-config check — no client. | High | None (reads captured config) | [workday-simplified-setup](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday-simplified-setup) |
 | WD-REST-002 | Agent's `user-context-setup.mcs.yml` topic contains a `BeginDialog` redirect to the Workday user-context system topic (`WorkdaySystemGetUserContextV2` on the simplified pack). Pure local-file check; `SKIPPED` on the legacy install path. | High | None (reads local agent YAML) | [workday-simplified-setup](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday-simplified-setup) |
 | WD-NET-001 | Workday REST + SOAP endpoints allowlisted at the corporate firewall for the Power Platform managed connectors. **Always `MANUAL`** — the kit has no reliable probe (a local reachability test proves only the dev machine's egress, not the managed-connector outbound path), so it echoes the endpoints InfoSec/IT must allowlist. | High | None (InfoSec/IT attestation; echoes captured hosts) | [workday-simplified-setup](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday-simplified-setup) |
@@ -208,6 +221,7 @@ the owning checklist rows (S6.1–S6.2).
 | WD-CONN-001 | Workday connections summary | High | PP Admin API | [workday#step-3-connection-references](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday#step-3-connection-references) |
 | WD-CONN-nnn | Individual connection status | High | PP Admin API | [workday#step-3-connection-references](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday#step-3-connection-references) |
 | WD-CONN-102 | Workday SAML signing certificate health (Entra-automated, Workday-manual comparison) | High | Microsoft Graph (servicePrincipal.keyCredentials) | [workday#task-1-create-the-x509-public-key](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday#task-1-create-the-x509-public-key) |
+| WD-RUN-001 | Workday active connector runtime health. Active, consent-gated probe: a transient cloud flow invokes one **read-only** Workday operation (default `GetWorkerMe`; allowlist-enforced) through the agent's service-account managed connection from Power Platform egress, then is deleted — the second of the kit's two mutating tenant paths (see INFRA-003), with guaranteed cleanup and orphan sweep. PASS when Workday returns data; FAILED for an attributable connector failure (auth 401/403, endpoint 404/405, server 500, or a network/DNS/TLS/DLP block). An HTTP 400 / BadRequest is treated as **indeterminate** (it reached Workday but a wrong default operation and a Workday business fault are indistinguishable) and degrades to the passive run-history signal rather than FAILING the connection. When the probe is not run (flag omitted / declined or no invocable connection) it falls back to recent Workday connector run history; a true pre-deployment state returns NOT_CONFIGURED. | High | Consent-gated transient connector probe + passive run-history fallback | [workday](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday) |
 | WD-FLOW-nnn | Individual flow enabled/disabled | High | PP Admin API | [workday#topics](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday#topics) |
 | WD-SEC-003 | Personal Data domain write permission (Employee as Self). See [remediation guide](./remediation-guide.md#wd-sec-003-personal-data-domain-write-permission-employee-as-self) for full details. | High | Workday SOAP runtime probe + MANUAL fallback | [workday](https://learn.microsoft.com/en-us/copilot/microsoft-365/employee-self-service/workday) |
 
@@ -355,6 +369,8 @@ The operator confirms the effective per-group state in the portal.
 | ID | Check | Priority | Method | PASS | FAIL | WARN |
 |----|-------|----------|--------|------|------|------|
 | INFRA-001 | Inbound connectivity to Microsoft services | Critical | TCP probe (DNS → TCP → TLS) to required Microsoft endpoints (Entra ID, Power Platform, Dataverse, Copilot Studio, Graph) | All endpoints reachable with valid TLS | Any Microsoft endpoint unreachable (DNS failure, TCP timeout, connection refused) | TLS handshake failure (proxy interception, certificate issue) |
+| INFRA-002 | HR system reachability from the maker's machine | High | Layer-by-layer DNS → TCP → TLS probe (`probe_endpoint()`) to each configured external system host, run locally. Accuracy MEDIUM: a FAIL is always meaningful, a PASS is necessary but not sufficient (the maker's network path differs from Power Platform's egress) | Host reachable with valid TLS | Host unreachable (DNS failure or connection refused) | TCP timeout, TLS handshake failure, or endpoint URL unverifiable |
+| INFRA-003 | External endpoint reachability from Power Platform egress | Critical | Enumerate external endpoints (Workday / ServiceNow / SAP SuccessFactors / custom HTTP) from the agent's connection config. Reachability is verified only from Power Platform's own egress via the opt-in, consent-gated `--runtime-reachability` probe: a transient cloud flow (Dataverse `workflow` row) sends one real HTTP request from the environment's egress, then is deleted — one of the kit's two mutating tenant paths (the other is `WD-RUN-001`'s active Workday connector probe), with guaranteed cleanup and orphan sweep. When the probe is not run (flag omitted/declined or prerequisites missing) the check returns MANUAL guidance; there is no local TCP/TLS fallback (a laptop probe runs from the wrong network and cannot prove the runtime path). Read-only and idempotent by default | All enumerated endpoints reachable | Any endpoint unreachable (DNS failure or connection refused) — names the endpoint URL and the blocking hop | Unverifiable endpoint (no recorded URL) or an indeterminate egress probe; also returns MANUAL guidance when the probe is not run (flag omitted/declined or prerequisites missing) |
 | INFRA-006 | DLP policies permit every agent connector (classic data policies; ACP / custom-connector URL patterns out of scope) | Critical | Power Platform Admin API (apiPolicies) + Dataverse connection references; reconciles each agent connector against effective DLP connector groups (most-restrictive policy wins) | All agent connectors allowed and in the same data-group, none Blocked | Any required connector Blocked | Connectors allowed but split across data-groups (cross-group) — all allowed, but can't be combined in one agent action; or some connectors not explicitly classified AND no default group is known (legacy `connectorGroups` policies; modern `definition.apiGroups` policies resolve unlisted connectors via `defaultApiGroup`), or classification could not be determined (permissions / Dataverse unreadable). No policy → SKIPPED (coverage owned by ENV-008) |
 | INFRA-011 | Connector secret storage safety | Critical | Read Dataverse env vars + connection references; detect-first gate on where each connector secret lives. Plaintext detection is by env-var name (not value scanning), tiered by confidence: high-confidence names fail, broad/ambiguous names warn. Vault hardening is not probed in v1 (see MANUAL). | Secret stored Key Vault-backed (Secret-type env var), or no inline secret present | Inline plaintext value in a Text env var whose name is a high-confidence secret keyword (secret/password/pwd/clientsecret) | Inline value in a Text env var whose name is a broad/ambiguous secret keyword (token/apikey/credential) — name-only evidence, confirm manually. (MANUAL, not WARN, for: secret inside a connection (Workday legacy ISU, ServiceNow); and Key Vault hardening (soft-delete/purge/RBAC), which the kit does not read.) |
 
@@ -456,10 +472,10 @@ of those checkpoint IDs, owned by the master setup checklist
 | `WD-CONN-010` | reuse | skill-3 | S3.7 | attest | Single-Entra-tenant federation alignment |
 | `WD-API-CLIENT-001` | mint | skill-4 | S4.1 | attest | Workday API client registered (functional areas + Workday-owned scope) |
 | `WD-TENANT-001` | mint | skill-4 | S4.2, S4.3 | attest | Connection fields captured; auth policies scoped to the OAuth client |
-| `WD-PKG-001` | reuse | skill-5 | S5.1 | manual | Extension-pack flavor = `simplified` (exact `ff0df` match) |
-| `WD-CONN-012` | reuse | skill-5 | S5.2 | prog | Workday connection ref (`ff0df`) bound, own account |
+| `WD-PKG-001` | reuse | skill-5 | S5.1 | manual | Extension-pack flavor = `simplified` (exact `ff0df` or `msdyn_EssWorkdayRuntime` reference shape) |
+| `WD-CONN-012` | reuse | skill-5 | S5.2 | prog | Workday connection ref (`ff0df` or `msdyn_sharedworkdaysoap_workdayruntime`) bound, own account |
 | `WD-CONN-AUTH-001` | mint | skill-5 | S5.3 | attest | Connection auth type = Entra ID Integrated (echoes `MANUAL`; see §3d reconciliation) |
-| `DV-CONN-001` | mint | skill-5 | S5.4 | prog | Dataverse connection (`92b66`) bound — **non-`WD` family** |
+| `DV-CONN-001` | mint | skill-5 | S5.4 | prog | Dataverse connection (`92b66` or `msdyn_sharedcommondataserviceforapps_workdayruntime`) bound — **non-`WD` family** |
 | `WD-REST-001` | mint | skill-5 | S5.5 | prog | REST base URL present and trimmed to `/api` |
 | `WD-FLOW-*` | reuse | skill-5 | S5.6 | prog | Cloud flows on (one row per discovered flow) |
 | `WD-REST-002` | mint | skill-5 | S5.7 | prog w/ rollback | User-context redirect pushed → REST resolves `/workers/me` |
@@ -469,13 +485,15 @@ of those checkpoint IDs, owned by the master setup checklist
 
 **Notes**
 
-- **`92b66` is the Dataverse connector, not a Workday ref.** The simplified
-  Workday family fingerprints a single `ff0df` connection ref; the `92b66` binding
-  is verified under the non-`WD` ID `DV-CONN-001`, never as a second `WD-CONN` ref.
+- **The Dataverse reference is not a Workday ref.** The simplified family
+  fingerprints `ff0df`; the runtime package fingerprints
+  `msdyn_sharedworkdaysoap_workdayruntime`. Their corresponding Dataverse
+  references (`92b66` or
+  `msdyn_sharedcommondataserviceforapps_workdayruntime`) are verified under
+  the non-`WD` ID `DV-CONN-001`, never as a second `WD-CONN` ref.
 - **Legacy `WD-ENV-*` / `WD-WF-*` are not reused for simplified.** They test
   ISU/RaaS artifacts that simplified setup removes (reusing them yields false
   failures / N/A noise); the families are registered only so the registry resolves
   them. The new simplified-only IDs above are used instead.
 - **Reuse before minting.** New IDs are minted only for outputs no existing
   simplified-aware checkpoint covers.
-

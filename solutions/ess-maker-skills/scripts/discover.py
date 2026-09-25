@@ -2,12 +2,11 @@
 # Licensed under the MIT License.
 
 """
-ESS Maker Kit - Agent Discovery Script
+ESS Maker Kit - Dataverse Environment Discovery Script
 
-Authenticates to Dataverse via MSAL and lists available agents (bots).
-Designed to be called by the onboarding flow so that any model — including
-less-capable ones — can complete setup by running a terminal command instead
-of navigating MCP tool calls.
+Lists Dataverse-linked Power Platform environments for FlightCheck and
+extension setup flows that still require one. Standalone FlightCheck can also
+list agents after an environment is selected.
 
 Usage:
     # List all environments in the tenant (no URL required)
@@ -16,71 +15,107 @@ Usage:
     # Select environment #2 and output JSON
     python scripts/discover.py --list-environments --select 2
 
-    # List agents in the environment
+    # Resolve a known Dataverse URL
+    python scripts/discover.py \
+        --resolve-environment-url https://org.crm.dynamics.com
+
+    # List agents for standalone FlightCheck
     python scripts/discover.py --url https://org.crm.dynamics.com
 
-    # Select agent #2 and output JSON for the next step
-    python scripts/discover.py --url https://org.crm.dynamics.com --select 2
+    # Select agent #2 and output JSON
+    python scripts/discover.py \
+        --url https://org.crm.dynamics.com --select 2
 """
 
 import argparse
 import json
-import sys
 import os
+import sys
 
-# Add scripts/ to path so we can import auth
+# Add scripts/ to path so we can import environment helpers.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from auth import authenticate, query_all
-from http_errors import APIError
 
 
 def discover_agents(env_url, token):
-    """Query Dataverse for all bots and return the list."""
+    """Query Dataverse for agents without classifying setup products."""
+    from auth import query_all
+
     raw = query_all(
-        env_url, token,
+        env_url,
+        token,
         entity_set="bots",
         select="botid,name,schemaname,ismanaged",
     )
-    agents = []
-    for r in raw:
-        agents.append({
-            "botid": r.get("botid"),
-            "name": r.get("name"),
-            "schemaname": r.get("schemaname"),
-            "ismanaged": r.get("ismanaged", False),
-        })
-    return agents
+    return [
+        {
+            "botid": record.get("botid"),
+            "name": record.get("name"),
+            "schemaname": record.get("schemaname"),
+            "ismanaged": record.get("ismanaged", False),
+        }
+        for record in raw
+    ]
 
 
 def print_agent_table(agents):
-    """Print a numbered table of agents to stdout."""
-    # Calculate column widths
-    name_width = max((len(a["name"] or "") for a in agents), default=10)
-    schema_width = max((len(a["schemaname"] or "") for a in agents), default=11)
-    name_width = max(name_width, 10)
-    schema_width = max(schema_width, 11)
-
-    header = f"  {'#':<4} {'Agent Name':<{name_width}}  {'Schema Name':<{schema_width}}  {'Managed'}"
-    sep = f"  {'-'*4} {'-'*name_width}  {'-'*schema_width}  {'-'*7}"
+    """Print a numbered agent table."""
+    name_width = max(
+        10,
+        max((len(agent["name"] or "") for agent in agents), default=0),
+    )
+    schema_width = max(
+        11,
+        max((len(agent["schemaname"] or "") for agent in agents), default=0),
+    )
+    header = (
+        f"  {'#':<4} {'Agent Name':<{name_width}}  "
+        f"{'Schema Name':<{schema_width}}  {'Managed'}"
+    )
+    separator = (
+        f"  {'-' * 4} {'-' * name_width}  "
+        f"{'-' * schema_width}  {'-' * 7}"
+    )
     print()
     print(header)
-    print(sep)
-    for i, a in enumerate(agents, 1):
-        managed = "Yes" if a["ismanaged"] else "No"
-        print(f"  {i:<4} {a['name'] or '':<{name_width}}  {a['schemaname'] or '':<{schema_width}}  {managed}")
+    print(separator)
+    for index, agent in enumerate(agents, 1):
+        managed = "Yes" if agent["ismanaged"] else "No"
+        print(
+            f"  {index:<4} {agent['name'] or '':<{name_width}}  "
+            f"{agent['schemaname'] or '':<{schema_width}}  {managed}"
+        )
     print()
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Discover agents in a Dataverse environment")
-    parser.add_argument("--url",
-                        help="Power Platform environment URL")
+        description="Discover FlightCheck environments and agents")
+    parser.add_argument(
+        "--url",
+        help="Dataverse environment URL for standalone FlightCheck agent discovery",
+    )
     parser.add_argument("--list-environments", action="store_true",
                         help="List all environments in the tenant (no URL needed)")
+    parser.add_argument(
+        "--resolve-environment-url",
+        help="Resolve one environment URL to its Power Platform metadata",
+    )
     parser.add_argument("--select", type=int, default=None,
-                        help="Select agent by number and output JSON")
+                        help="Select environment by number and output JSON")
     args = parser.parse_args()
+
+    if args.resolve_environment_url:
+        from list_environments import resolve_environment_for_user
+
+        selected = resolve_environment_for_user(args.resolve_environment_url)
+        if selected is None:
+            print(
+                "ERROR: The provided URL did not match a Dataverse-linked "
+                "Power Platform environment available to the signed-in account."
+            )
+            sys.exit(1)
+        print(f"SELECTED_ENV_JSON:{json.dumps(selected)}")
+        return
 
     # --- Environment listing mode ---
     if args.list_environments:
@@ -101,6 +136,7 @@ def main():
             sys.exit(1)
 
         print_environment_table(dv_environments)
+        print(f"ENVIRONMENT_LIST_JSON:{json.dumps(dv_environments)}")
 
         if args.select is not None:
             idx = args.select
@@ -114,41 +150,38 @@ def main():
 
         return
 
-    # --- Agent discovery mode (requires --url) ---
     if not args.url:
-        parser.error("--url is required when not using --list-environments")
+        parser.error(
+            "choose --list-environments, --resolve-environment-url, or --url"
+        )
 
     env_url = args.url.rstrip("/")
+    from auth import authenticate
+    from http_errors import APIError
 
-    print("Authenticating to Dataverse...")
-    token = authenticate(env_url)
-    print("Authenticated.\n")
-
-    print("Discovering agents...")
     try:
-        agents = discover_agents(env_url, token)
-    except APIError as e:
-        print(e.format_for_terminal())
+        agents = discover_agents(env_url, authenticate(env_url))
+    except APIError as error:
+        print(error.format_for_terminal())
         sys.exit(1)
 
+    print(f"AGENT_DISCOVERY_JSON:{json.dumps(agents)}")
     if not agents:
         print("No agents found in this environment.")
-        print("Make sure your ESS agent is installed in Copilot Studio.")
         sys.exit(1)
 
     print(f"Found {len(agents)} agent(s):")
     print_agent_table(agents)
 
     if args.select is not None:
-        idx = args.select
-        if idx < 1 or idx > len(agents):
-            print(f"ERROR: Invalid selection '{idx}'. "
-                  f"Choose a number between 1 and {len(agents)}.")
+        index = args.select
+        if index < 1 or index > len(agents):
+            print(
+                f"ERROR: Invalid selection '{index}'. "
+                f"Choose a number between 1 and {len(agents)}."
+            )
             sys.exit(1)
-        selected = agents[idx - 1]
-        # Output JSON on a clearly marked line for easy parsing
-        print(f"SELECTED_AGENT_JSON:{json.dumps(selected)}")
-        sys.exit(0)
+        print(f"SELECTED_AGENT_JSON:{json.dumps(agents[index - 1])}")
 
 
 if __name__ == "__main__":

@@ -132,6 +132,13 @@ def _register_grants_for(client_id: str, grants) -> None:
 
 
 class TestScopeExposed:
+    @pytest.fixture(autouse=True)
+    def _isolate_from_connect_config(self, tmp_path, monkeypatch):
+        """Run in a clean cwd so ``_workday_hints`` cannot pick up a stray
+        ``.local/connect/workday/config.json`` — these tests drive the hint
+        exclusively through ``config``."""
+        monkeypatch.chdir(tmp_path)
+
     @responses.activate
     def test_fully_configured_returns_passed(self, graph) -> None:
         from flightcheck.checks.entra_app import _check_scope_exposed
@@ -219,6 +226,13 @@ class TestScopeExposed:
 
 
 class TestAdminConsent:
+    @pytest.fixture(autouse=True)
+    def _isolate_from_connect_config(self, tmp_path, monkeypatch):
+        """Run in a clean cwd so ``_workday_hints`` cannot pick up a stray
+        ``.local/connect/workday/config.json`` — these tests drive the hint
+        exclusively through ``config``."""
+        monkeypatch.chdir(tmp_path)
+
     @responses.activate
     def test_admin_consent_granted_returns_passed(self, graph) -> None:
         from flightcheck.checks.entra_app import _check_admin_consent
@@ -376,6 +390,21 @@ class TestWorkdayHints:
         # entraAppId from runner.config; entraAppObjectId filled from connect.
         assert _workday_hints({"entraAppId": "app-r"}) == ("app-r", "obj-x")
 
+    def test_explicit_overlay_does_not_fall_back_to_cea_config(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from flightcheck.checks.entra_app import _workday_hints
+
+        self._write_connect_config(
+            tmp_path, {"entraAppId": "cea-app", "entraAppObjectId": "cea-obj"}
+        )
+        monkeypatch.chdir(tmp_path)
+
+        assert _workday_hints({
+            "_connectConfigPath": ".local/connect/workday-da/config.json",
+            "entraAppId": "da-app",
+        }) == ("da-app", "")
+
     def test_missing_connect_config_returns_empty(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -471,6 +500,13 @@ class TestAppAssignment:
     """WD-ASSIGN-001 delegates to build_assignment_results (fully covered
     under AUTH-005). These tests pin that skill-3 renders it under the
     WD-ASSIGN-001 / "Entra App" identity."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_from_connect_config(self, tmp_path, monkeypatch):
+        """Run in a clean cwd so ``_workday_hints`` cannot pick up a stray
+        ``.local/connect/workday/config.json`` — these tests drive the hint
+        exclusively through ``config``."""
+        monkeypatch.chdir(tmp_path)
 
     @responses.activate
     def test_group_assigned_returns_passed(self, graph) -> None:
@@ -644,6 +680,13 @@ class TestAppAssignmentScopesToConfiguredApp:
 
 
 class TestNameIdMapping:
+    @pytest.fixture(autouse=True)
+    def _isolate_from_connect_config(self, tmp_path, monkeypatch):
+        """Run in a clean cwd so ``_workday_hints`` cannot pick up a stray
+        ``.local/connect/workday/config.json`` — these tests drive the hint
+        exclusively through ``config``."""
+        monkeypatch.chdir(tmp_path)
+
     @responses.activate
     def test_override_policy_returns_passed(self, graph) -> None:
         from flightcheck.checks.entra_app import _check_nameid_mapping

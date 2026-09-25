@@ -27,11 +27,13 @@ Read `.local/config.json` to get the agent details. Set:
 - BOT_NAME = `agent.name`
 - SCHEMA_NAME = `agent.schemaName`
 - IS_MANAGED = `agent.isManaged`
+- ENVIRONMENT_ID = `agent.environmentId` (fall back to top-level `environmentId`;
+  may be absent for classic Dataverse agents)
 
 Run this command in the terminal:
 
 ```
-python scripts/fetch_and_setup.py --url "{ENV_URL}" --bot-id "{BOT_ID}" --name "{BOT_NAME}" --schema "{SCHEMA_NAME}" {--managed if IS_MANAGED is true}
+python scripts/fetch_and_setup.py --url "{ENV_URL}" --bot-id "{BOT_ID}" --name "{BOT_NAME}" --schema "{SCHEMA_NAME}" {--environment-id "{ENVIRONMENT_ID}" if ENVIRONMENT_ID is set} {--managed if IS_MANAGED is true}
 ```
 
 Wait for the script to complete. Check the output for:
@@ -44,7 +46,7 @@ Wait for the script to complete. Check the output for:
 
 ### If template configs > 0 AND new ServiceNow topics are visible
 
-Update `.local/connect/servicenow/tasks.md` — change step 4 from
+Update `.local/connect/servicenow/steps.md` — change step 4 from
 `- [ ]` to `- [x]`.
 
 Update `.local/connect/servicenow/config.json` — set `"status": "connected"`.
@@ -71,7 +73,7 @@ Count the new ServiceNow-related topics from the script output.
 
 ✅ Connection verified!
 
-| # | Task | Status |
+| # | Step | Status |
 |---|------|--------|
 | 1 | Instance configured | ✅ |
 | 2 | Connection secured | ✅ |
