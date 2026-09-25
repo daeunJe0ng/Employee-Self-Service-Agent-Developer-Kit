@@ -44,8 +44,19 @@ def test_checklist_uses_readable_titles_without_visible_internal_ids() -> None:
 
     assert len(visible_rows) == 21
     assert all(not re.search(r"\bDA\d", line) for line in visible_rows)
+    assert all("ESS DA" not in line for line in visible_rows)
     assert any("Connect Microsoft Entra sign-in to Workday" in line for line in tasks.splitlines())
     assert any("Match the signed-in employee" in line for line in visible_rows)
+
+
+def test_orchestrator_renders_canonical_titles_in_canonical_order() -> None:
+    tasks = (_WORKDAY_DA / "tasks.md").read_text(encoding="utf-8")
+    skill = (_WORKDAY_DA / "SKILL.md").read_text(encoding="utf-8")
+
+    canonical_titles = re.findall(r"^- \[ \] \*\*(.+?)\*\*", tasks, re.MULTILINE)
+    rendered_titles = re.findall(r"^\s+- \{m\} (.+)$", skill, re.MULTILINE)
+
+    assert rendered_titles == canonical_titles
 
 
 def test_state_contract_requires_immediate_durable_updates() -> None:
