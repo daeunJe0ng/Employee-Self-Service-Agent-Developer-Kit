@@ -98,6 +98,31 @@ of what needs a human — is as much the deliverable as the package is.
 
 ## Install
 
+The quickest path needs **nothing installed first** — not even Python. A launcher
+resolves (and, if missing, installs) Python 3.11+, creates a private `.venv`, and
+installs the tool into it on first run, then forwards your arguments straight to
+`essmig`:
+
+```powershell
+# Windows
+cd tools\ess-ca-to-da
+.\run.ps1 migrate --environment-url https://contoso.crm.dynamics.com --out out
+```
+
+```bash
+# macOS / Linux
+cd tools/ess-ca-to-da
+./run.sh migrate --environment-url https://contoso.crm.dynamics.com --out out
+```
+
+Every command below that starts with `python -m essmig ...` can be run as
+`.\run.ps1 ...` / `./run.sh ...` instead. On Windows the launcher auto-installs
+Python via `winget`; on macOS via Homebrew. Force the tool to reinstall into the
+`.venv` after a code change with `.\run.ps1 -Reinstall` (or `ESSMIG_REINSTALL=1
+./run.sh`).
+
+If you would rather manage Python yourself:
+
 ```powershell
 cd tools\ess-ca-to-da
 python -m pip install -e ".[dev]"
