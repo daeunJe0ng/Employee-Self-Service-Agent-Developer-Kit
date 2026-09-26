@@ -1364,7 +1364,8 @@ def _run_profile(args):
         )
     except ValueError as e:
         print(f"ERROR: {e}")
-        print("Pass --validation-realm dev|test|prod for profile runs.")
+        print("Pass --validation-realm dev|test|prod (or set \"realm\" in "
+              ".local/config.json) for profile runs.")
         sys.exit(1)
 
     runner = FlightCheckRunner(
@@ -1452,13 +1453,15 @@ def main():
     parser.add_argument(
         "--profile",
         help="Run a named validation profile, e.g. workday-da:setup-readiness. "
-             "Profile runs require --validation-realm and emit the versioned "
-             "Connect result contract in results.json.",
+             "Profile runs need a realm (--validation-realm, or a \"realm\" key "
+             "in .local/config.json) and emit the versioned Connect result "
+             "contract in results.json.",
     )
     parser.add_argument(
         "--validation-realm",
         choices=["dev", "test", "prod"],
-        help="Realm for a --profile validation context. Required with --profile.",
+        help="Realm for a --profile validation context. Required with --profile "
+             "unless .local/config.json supplies a \"realm\" value.",
     )
     parser.add_argument(
         "--agent-schema-name",

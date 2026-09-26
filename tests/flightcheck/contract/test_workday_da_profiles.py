@@ -157,6 +157,20 @@ def test_profile_plan_runs_wd_conn_013_via_real_workday_category() -> None:
     assert "Workday" in labels
 
 
+def test_profile_requirements_rejects_empty_profile(monkeypatch) -> None:
+    # A profile with no checkpoint members must fail loudly instead of
+    # indexing checkpoint_ids[0] and raising an opaque IndexError.
+    empty = registry.ProfileSpec(
+        name="workday-da:empty-guard",
+        checkpoint_ids=(),
+        description="Intentionally empty profile for the guard test.",
+    )
+    monkeypatch.setitem(registry.PROFILES, empty.name, empty)
+
+    with pytest.raises(registry.RegistryError, match="no checkpoints"):
+        registry.profile_requirements(empty.name)
+
+
 def test_connection_state_fixtures_cover_required_states() -> None:
     fixtures = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 

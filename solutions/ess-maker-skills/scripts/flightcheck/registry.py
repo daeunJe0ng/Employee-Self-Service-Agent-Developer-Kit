@@ -943,6 +943,10 @@ def profile_requirements(profile_name: str) -> ResolvedPlan:
     profile = PROFILES.get(profile_name)
     if profile is None:
         raise RegistryError(f"Unknown profile {profile_name!r}.")
+    if not profile.checkpoint_ids:
+        raise RegistryError(
+            f"Profile {profile_name!r} declares no checkpoints."
+        )
 
     clients: frozenset = frozenset()
     requires_config = False
