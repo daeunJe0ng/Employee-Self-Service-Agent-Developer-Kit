@@ -294,7 +294,25 @@ def test_pub_001_export_empty_fails(minimalbots_client):
     assert "empty package" in result.result
 
 
-def test_pub_002_describes_target_environment_import():
+def test_pub_001_export_client_error_prefixes_exception_type():
+    """When the minimalBots client raises, PUB-001 must report ERROR with the
+    exception *type name* prefixed (not just str(exc)), matching the file-wide
+    ``{type(e).__name__}: {e}`` convention so a bare/empty message can't
+    produce an unattributable report line. Pure error-handling path — the
+    client is stubbed to raise, no network."""
+    from flightcheck.runner import Status
+
+    class _RaisingClient:
+        def export(self, bot_id):
+            raise TimeoutError("connection timed out")
+
+    result = _results_by_id(
+        _runner(bot_id="bot-xyz", minimalbots=_RaisingClient())
+    )["PUB-001"]
+
+    assert result.status == Status.ERROR.value, result.result
+    assert "minimalBots ALM export failed" in result.result
+    assert "TimeoutError: connection timed out" in result.result
     text = _results_by_id(_runner())["PUB-002"].remediation
     # The action happens in a *different* environment than the kit
     # was pointed at, so we can't deep-link — but we must say where.

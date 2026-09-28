@@ -138,7 +138,7 @@ def _check_pub_001_export(runner, row: dict) -> CheckResult:
             checkpoint_id="PUB-001",
             row=row,
             status=Status.ERROR,
-            result=f"minimalBots ALM export failed for configured agent {bot_id}: {e}",
+            result=f"minimalBots ALM export failed for configured agent {bot_id}: {type(e).__name__}: {e}",
             remediation=(
                 "Confirm the signed-in maker has CopilotStudio.MinimalBot.ReadWrite "
                 "access for this environment, then re-run FlightCheck."
@@ -297,7 +297,7 @@ def _check_pub_002_import_probe(runner, row: dict) -> CheckResult:
             checkpoint_id="PUB-002",
             row=row,
             status=Status.ERROR,
-            result=f"minimalBots ALM import probe failed: {e}",
+            result=f"minimalBots ALM import probe failed: {type(e).__name__}: {e}",
             remediation=(
                 "Review the minimalBots ALM API error, then re-run with "
                 "--alm-import-probe after the underlying issue is fixed."
